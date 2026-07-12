@@ -1,0 +1,8 @@
+myenv/
+logs/
+*.pyc
+__pycache__/
+.env
+.git/
+.DS_Store
+tests/

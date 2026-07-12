@@ -1,0 +1,8 @@
+myenv/
+.env
+logs/
+__pycache__/
+*.pyc
+.DS_Store
+memory/jarvis.db
+screenshots/

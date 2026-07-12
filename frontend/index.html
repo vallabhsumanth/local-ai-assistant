@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JARVIS</title>
+  <style>
+    :root {
+      --bg-0: #060a0e;
+      --bg-1: #0a0f15;
+      --surface: #0f151d;
+      --surface-2: #131b24;
+      --border: rgba(255, 255, 255, 0.07);
+      --border-strong: rgba(120, 220, 210, 0.22);
+      --text: #e8f0f2;
+      --text-dim: #8493a0;
+      --text-faint: #56636f;
+      --accent: #4fe3c8;
+      --accent-soft: rgba(79, 227, 200, 0.12);
+      --accent-glow: rgba(79, 227, 200, 0.35);
+      --gold: #f5b452;
+      --ok: #34d399;
+      --radius: 14px;
+      --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Roboto Mono", monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font); color: var(--text);
+      background: radial-gradient(120% 100% at 80% -10%, #0c1620 0%, var(--bg-0) 55%);
+      display: grid; grid-template-columns: 280px 1fr; height: 100vh; overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ============ SIDEBAR ============ */
+    aside { background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+      border-right: 1px solid var(--border); padding: 26px 22px;
+      display: flex; flex-direction: column; gap: 24px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .mark { position: relative; width: 40px; height: 40px; flex: none; }
+    .mark .ring { position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid transparent;
+      border-top-color: var(--accent); border-right-color: rgba(79,227,200,.25); animation: spin 5s linear infinite; }
+    .mark .dot { position: absolute; inset: 13px; border-radius: 50%;
+      background: radial-gradient(circle, #eafffb, var(--accent) 55%, #0d7a68);
+      box-shadow: 0 0 12px var(--accent-glow); animation: breathe 3s ease-in-out infinite; }
+    .brand .name { font-size: 19px; font-weight: 700; letter-spacing: 3px; }
+    .brand .sub { font-size: 10px; color: var(--text-faint); letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+    .card h3 { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-faint); margin-bottom: 12px; font-weight: 600; }
+    .row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 5px 0; }
+    .row span:first-child { color: var(--text-dim); }
+    .row .val { font-family: var(--mono); font-size: 12px; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; }
+    .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    .pill.busy::before { background: var(--gold); box-shadow: 0 0 8px var(--gold); animation: blink 1s infinite; }
+    .caps { display: flex; flex-direction: column; gap: 9px; }
+    .caps div { font-size: 12.5px; color: var(--text-dim); display: flex; align-items: center; gap: 9px; }
+    .caps div::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); opacity: .8; }
+    aside .foot { margin-top: auto; font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+
+    /* ============ MAIN ============ */
+    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100vh; }
+    .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 28px; border-bottom: 1px solid var(--border); }
+    .topbar h1 { font-size: 15px; font-weight: 600; }
+    .topbar .status { margin-left: auto; font-size: 12px; color: var(--text-dim); font-family: var(--mono); display: flex; align-items: center; gap: 8px; }
+
+    /* ---- particle sphere stage ---- */
+    .stage { position: relative; height: 240px; flex: none; display: flex;
+      align-items: center; justify-content: center; overflow: hidden; }
+    #orb { width: 100%; height: 100%; display: block; }
+    .stage .label { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center;
+      font-family: var(--mono); font-size: 11px; letter-spacing: 4px; text-transform: uppercase;
+      color: var(--text-faint); transition: color .3s; }
+    .stage .label b { color: var(--accent); text-shadow: 0 0 10px var(--accent-glow); }
+
+    .thread { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 18px 28px 24px; }
+    .thread-inner { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    .thread::-webkit-scrollbar { width: 8px; }
+    .thread::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 4px; }
+    .turn { display: flex; gap: 14px; animation: rise .4s ease both; }
+    .turn.user { flex-direction: row-reverse; }
+    .avatar { width: 34px; height: 34px; border-radius: 10px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; font-family: var(--mono); }
+    .avatar.j { background: var(--accent-soft); border: 1px solid var(--border-strong); position: relative; }
+    .avatar.j::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: radial-gradient(circle, #eafffb, var(--accent) 60%, #0d7a68); box-shadow: 0 0 10px var(--accent-glow); }
+    .avatar.u { background: rgba(245,180,82,.12); border: 1px solid rgba(245,180,82,.3); color: var(--gold); }
+    .bubble { max-width: 82%; min-width: 0; }
+    .bubble .who { font-size: 11px; color: var(--text-faint); margin-bottom: 5px; }
+    .turn.user .bubble { display: flex; flex-direction: column; align-items: flex-end; }
+    .bubble .body { padding: 13px 16px; border-radius: 13px; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; max-width: 100%; }
+    .turn.jarvis .body { background: var(--surface); border: 1px solid var(--border); border-top-left-radius: 4px; }
+    .turn.user .body { background: linear-gradient(135deg, #17222b, #111a22); border: 1px solid var(--border-strong); border-top-right-radius: 4px; }
+
+    .dots { display: inline-flex; gap: 5px; padding: 4px 0; }
+    .dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); opacity: .4; animation: bounce 1.2s infinite; }
+    .dots i:nth-child(2){ animation-delay:.15s } .dots i:nth-child(3){ animation-delay:.3s }
+
+    .composer { padding: 8px 28px 22px; }
+    .composer-inner { max-width: 780px; margin: 0 auto; display: flex; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 8px 8px 8px 18px; align-items: center; transition: border-color .2s, box-shadow .2s; }
+    .composer-inner:focus-within { border-color: var(--border-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .composer input { flex: 1; background: none; border: none; color: var(--text); font-family: var(--font); font-size: 15px; padding: 10px 0; }
+    .composer input:focus { outline: none; } .composer input::placeholder { color: var(--text-faint); }
+    .composer #send { background: var(--accent); color: #032019; border: none; border-radius: 11px; padding: 11px 20px; font-weight: 600; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 7px; transition: .18s; }
+    .composer #send:hover:not(:disabled) { filter: brightness(1.1); box-shadow: 0 0 16px var(--accent-glow); }
+    .composer #send:disabled { opacity: .4; cursor: default; }
+    .hint { max-width: 780px; margin: 10px auto 0; font-size: 11.5px; color: var(--text-faint); text-align: center; }
+    .hint code { font-family: var(--mono); color: var(--text-dim); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; }
+
+    /* icon buttons (topbar + mic) */
+    .iconbtn { background: none; border: 1px solid var(--border); color: var(--text-dim);
+      width: 34px; height: 34px; border-radius: 9px; cursor: pointer; display: inline-flex;
+      align-items: center; justify-content: center; transition: .16s; padding: 0; }
+    .iconbtn:hover { color: var(--accent); border-color: var(--border-strong); }
+    .iconbtn.active { color: var(--accent); border-color: var(--border-strong); background: var(--accent-soft); }
+    .topbar .tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .topbar .status { margin-left: 0; }
+    .mic { flex: none; }
+    .mic.listening { color: #ff6b6b; border-color: rgba(255,107,107,.5);
+      background: rgba(255,107,107,.12); animation: micpulse 1s infinite; }
+    @keyframes micpulse { 0%,100%{ box-shadow: 0 0 0 0 rgba(255,107,107,.4) } 50%{ box-shadow: 0 0 0 6px rgba(255,107,107,0) } }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes breathe { 0%,100%{ transform: scale(1); opacity:.9 } 50%{ transform: scale(1.12); opacity:1 } }
+    @keyframes blink { 0%,100%{ opacity:1 } 50%{ opacity:.3 } }
+    @keyframes rise { from { opacity:0; transform: translateY(10px) } }
+    @keyframes bounce { 0%,60%,100%{ transform: translateY(0); opacity:.4 } 30%{ transform: translateY(-6px); opacity:1 } }
+    @media (max-width: 760px) { body { grid-template-columns: 1fr; } aside { display: none; } .stage { height: 200px; } }
+  </style>
+</head>
+<body>
+  <aside>
+    <div class="brand">
+      <div class="mark"><div class="ring"></div><div class="dot"></div></div>
+      <div><div class="name">JARVIS</div><div class="sub">Personal AI System</div></div>
+    </div>
+    <div class="card">
+      <h3>System</h3>
+      <div class="row"><span>Status</span><span class="val"><span class="pill" id="statusPill">Online</span></span></div>
+      <div class="row"><span>Core</span><span class="val" id="prov">—</span></div>
+      <div class="row"><span>Session</span><span class="val" id="sid">—</span></div>
+    </div>
+    <div class="card">
+      <h3>Capabilities</h3>
+      <div class="caps"><div>Natural conversation</div><div>Long-term memory</div><div>File management</div><div>Cloud sync · Supabase</div></div>
+    </div>
+    <div class="foot">v1.0 · Phase 1</div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <h1>Assistant</h1>
+      <div class="tools">
+        <div class="status"><span class="pill" id="topPill"></span><span id="statusText">Ready</span></div>
+        <button class="iconbtn active" id="voiceBtn" title="JARVIS speaks replies (toggle)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        </button>
+        <button class="iconbtn" id="fsBtn" title="Fullscreen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <canvas id="orb"></canvas>
+      <div class="label" id="orbLabel">Standing by</div>
+    </div>
+
+    <div class="thread"><div class="thread-inner" id="thread"></div></div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <input id="input" autocomplete="off" placeholder="Message JARVIS…" autofocus />
+        <button class="iconbtn mic" id="micBtn" title="Speak to JARVIS">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <button id="send" type="button">Send
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+      <div class="hint">JARVIS can make mistakes. Type <code>/help</code> for commands.</div>
+    </div>
+  </main>
+
+  <script>
+    /* ---------------- particle sphere ---------------- */
+    const canvas = document.getElementById('orb');
+    const ctx = canvas.getContext('2d');
+    let W = 0, H = 0, DPR = 1;
+    function resize() {
+      DPR = Math.min(2, window.devicePixelRatio || 1);
+      const r = canvas.getBoundingClientRect();
+      W = r.width; H = r.height;
+      canvas.width = W * DPR; canvas.height = H * DPR;
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+    window.addEventListener('resize', resize); resize();
+
+    const N = 1100, PTS = [];
+    for (let i = 0; i < N; i++) {
+      const y = 1 - (i / (N - 1)) * 2;
+      const rr = Math.sqrt(1 - y * y);
+      const theta = i * 2.399963229;      // golden angle
+      PTS.push({ x: Math.cos(theta) * rr, y, z: Math.sin(theta) * rr, seed: Math.random() * 10 });
+    }
+
+    let ry = 0, energy = 0, state = 'idle';
+    let last = performance.now();
+    const TILT = 0.4, cosX = Math.cos(TILT), sinX = Math.sin(TILT);
+
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      const target = state === 'thinking' ? 1 : state === 'listening' ? 0.8 : state === 'responding' ? 0.65 : 0;
+      energy += (target - energy) * Math.min(1, dt * 3);
+
+      ry += dt * (0.14 + energy * 0.6);
+      const cosY = Math.cos(ry), sinY = Math.sin(ry);
+      const R = Math.min(W, H) * 0.40;
+      const cx = W / 2, cy = H / 2;
+
+      ctx.clearRect(0, 0, W, H);
+      // soft central glow
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.5);
+      g.addColorStop(0, `rgba(79,227,200,${0.05 + energy * 0.06})`);
+      g.addColorStop(1, 'rgba(79,227,200,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < N; i++) {
+        const p = PTS[i];
+        let x = p.x * cosY - p.z * sinY;
+        let z = p.x * sinY + p.z * cosY;
+        const y2 = p.y * cosX - z * sinX;
+        const z2 = p.y * sinX + z * cosX;
+        const disp = 1 + energy * 0.14 * Math.sin(now * 0.004 + p.seed);
+        const sx = cx + x * R * disp;
+        const sy = cy + y2 * R * disp;
+        const depth = (z2 + 1) / 2;                 // 0 (back) .. 1 (front)
+        const size = 0.5 + depth * 1.7;
+        const a = (0.10 + depth * 0.65) * (0.55 + energy * 0.45);
+        ctx.beginPath();
+        ctx.arc(sx, sy, size, 0, 6.2832);
+        ctx.fillStyle = `rgba(${120 + depth * 60}, ${235}, ${215 - depth * 20}, ${a})`;
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    /* ---------------- chat ---------------- */
+    const thread = document.getElementById('thread');
+    const input = document.getElementById('input');
+    const send = document.getElementById('send');
+    const statusText = document.getElementById('statusText');
+    const statusPill = document.getElementById('statusPill');
+    const topPill = document.getElementById('topPill');
+    const orbLabel = document.getElementById('orbLabel');
+    const session = 'S-' + Math.random().toString(36).slice(2, 7).toUpperCase();
+    document.getElementById('sid').textContent = session;
+
+    function setState(s) {
+      state = s;
+      const busy = s !== 'idle';
+      const labels = { thinking: 'Processing', responding: 'Responding', listening: 'Listening' };
+      const label = labels[s] || 'Standing by';
+      statusText.textContent = busy ? label : 'Ready';
+      orbLabel.innerHTML = busy ? `<b>${label}</b>` : label;
+      topPill.className = 'pill' + (busy ? ' busy' : '');
+      statusPill.className = 'pill' + (busy ? ' busy' : '');
+    }
+
+    function turn(cls, who) {
+      const el = document.createElement('div'); el.className = 'turn ' + cls;
+      el.innerHTML = `<div class="avatar ${cls === 'user' ? 'u' : 'j'}">${cls === 'user' ? 'Y' : ''}</div>`;
+      const bubble = document.createElement('div'); bubble.className = 'bubble';
+      const w = document.createElement('div'); w.className = 'who'; w.textContent = who;
+      const body = document.createElement('div'); body.className = 'body';
+      bubble.appendChild(w); bubble.appendChild(body); el.appendChild(bubble);
+      thread.appendChild(el);
+      thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
+      return body;
+    }
+    function typeOut(node, text) {
+      setState('responding'); let i = 0;
+      speak(text);
+      (function step() {
+        node.textContent = text.slice(0, i);
+        thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
+        if (i++ < text.length) setTimeout(step, 7); else setState('idle');
+      })();
+    }
+
+    /* ---------------- voice output (free, browser TTS) ---------------- */
+    let voiceOn = localStorage.getItem('jarvisVoice') !== 'off';
+    const voiceBtn = document.getElementById('voiceBtn');
+    function refreshVoiceBtn() { voiceBtn.classList.toggle('active', voiceOn); }
+    refreshVoiceBtn();
+    function pickVoice() {
+      const vs = speechSynthesis.getVoices();
+      // Prefer a crisp English voice; fall back to the first available.
+      return vs.find(v => /en(-|_)?GB/i.test(v.lang) && /male|daniel|arthur/i.test(v.name))
+          || vs.find(v => /Daniel|Arthur|Google UK English Male/i.test(v.name))
+          || vs.find(v => /^en/i.test(v.lang)) || vs[0];
+    }
+    function speak(text) {
+      if (!voiceOn || !('speechSynthesis' in window)) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text.slice(0, 600));
+      const v = pickVoice(); if (v) u.voice = v;
+      u.rate = 1.02; u.pitch = 0.95;
+      speechSynthesis.speak(u);
+    }
+    voiceBtn.addEventListener('click', () => {
+      voiceOn = !voiceOn;
+      localStorage.setItem('jarvisVoice', voiceOn ? 'on' : 'off');
+      if (!voiceOn) speechSynthesis.cancel();
+      refreshVoiceBtn();
+    });
+
+    /* ---------------- voice input (free, browser STT) ---------------- */
+    const micBtn = document.getElementById('micBtn');
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recog = null, listening = false;
+    if (SR) {
+      recog = new SR();
+      recog.lang = 'en-US'; recog.interimResults = true; recog.continuous = false;
+      recog.onresult = (e) => {
+        let t = '';
+        for (const r of e.results) t += r[0].transcript;
+        input.value = t;
+      };
+      recog.onend = () => {
+        listening = false; micBtn.classList.remove('listening');
+        if (state === 'listening') setState('idle');
+        if (input.value.trim()) submit();
+      };
+      recog.onerror = () => { listening = false; micBtn.classList.remove('listening'); setState('idle'); };
+      micBtn.addEventListener('click', () => {
+        if (listening) { recog.stop(); return; }
+        speechSynthesis.cancel();
+        input.value = ''; listening = true;
+        micBtn.classList.add('listening'); setState('listening');
+        try { recog.start(); } catch (_) {}
+      });
+    } else {
+      micBtn.title = 'Voice input needs Chrome';
+      micBtn.style.opacity = '0.4';
+    }
+
+    /* ---------------- fullscreen ---------------- */
+    const fsBtn = document.getElementById('fsBtn');
+    fsBtn.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(() => {});
+    });
+
+    fetch('/health').then(r => r.json())
+      .then(d => document.getElementById('prov').textContent = d.provider || '?')
+      .catch(() => document.getElementById('prov').textContent = 'offline');
+
+    setState('idle');
+    turn('jarvis', 'JARVIS').textContent = "Good day. I'm online and ready to assist. How can I help?";
+
+    async function submit() {
+      const message = input.value.trim(); if (!message) return;
+      turn('user', session).textContent = message;
+      input.value = ''; send.disabled = true; setState('thinking');
+      const bodyNode = turn('jarvis', 'JARVIS');
+      bodyNode.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+      try {
+        const res = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, session }) });
+        const data = await res.json();
+        bodyNode.textContent = ''; typeOut(bodyNode, data.reply || '(no reply)');
+      } catch (err) { bodyNode.textContent = 'Connection error: ' + err; setState('idle'); }
+      finally { send.disabled = false; input.focus(); }
+    }
+    send.addEventListener('click', submit);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+  </script>
+</body>
+</html>

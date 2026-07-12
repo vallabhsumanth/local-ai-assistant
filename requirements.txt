@@ -1,0 +1,16 @@
+# Web layer (runs locally and on Railway).
+fastapi
+uvicorn[standard]
+pydantic
+
+# Cloud storage backend (all user data lives in Supabase, not on disk).
+supabase
+
+# Headless browser automation (also needs: playwright install chromium).
+playwright
+
+# Optional LLM providers — installed on demand by core/deps.py when selected:
+#   anthropic   # for JARVIS_LLM_PROVIDER=anthropic
+#   openai      # for JARVIS_LLM_PROVIDER=openai
+#   requests    # for JARVIS_LLM_PROVIDER=ollama
+requests

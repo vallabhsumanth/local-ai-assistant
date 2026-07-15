@@ -112,6 +112,14 @@
       align-items: center; justify-content: center; transition: .16s; padding: 0; }
     .iconbtn:hover { color: var(--accent); border-color: var(--border-strong); }
     .iconbtn.active { color: var(--accent); border-color: var(--border-strong); background: var(--accent-soft); }
+    #voiceSelect {
+      background: var(--surface); color: var(--text-dim); border: 1px solid var(--border);
+      border-radius: 9px; padding: 0 10px; height: 34px; font-family: var(--font);
+      font-size: 12.5px; cursor: pointer; outline: none; max-width: 140px;
+      transition: border-color .16s, color .16s;
+    }
+    #voiceSelect:hover { color: var(--accent); border-color: var(--border-strong); }
+    #voiceSelect option { background: var(--surface-2); color: var(--text); }
     .topbar .tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
     .topbar .status { margin-left: 0; }
     .mic { flex: none; }
@@ -151,6 +159,9 @@
       <h1>Assistant</h1>
       <div class="tools">
         <div class="status"><span class="pill" id="topPill"></span><span id="statusText">Ready</span></div>
+        <select id="voiceSelect" title="Select voice engine">
+          <option value="">Auto Voice</option>
+        </select>
         <button class="iconbtn active" id="voiceBtn" title="JARVIS speaks replies (toggle)">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
         </button>
@@ -293,14 +304,56 @@
     /* ---------------- voice output (free, browser TTS) ---------------- */
     let voiceOn = localStorage.getItem('jarvisVoice') !== 'off';
     const voiceBtn = document.getElementById('voiceBtn');
+    const voiceSelect = document.getElementById('voiceSelect');
     function refreshVoiceBtn() { voiceBtn.classList.toggle('active', voiceOn); }
     refreshVoiceBtn();
+
+    function populateVoiceList() {
+      if (!('speechSynthesis' in window)) return;
+      const vs = speechSynthesis.getVoices();
+      const englishVoices = vs.filter(v => /^en/i.test(v.lang));
+      voiceSelect.innerHTML = '<option value="">Auto Voice</option>';
+      const savedVoiceURI = localStorage.getItem('jarvisSelectedVoiceURI');
+      englishVoices.forEach(voice => {
+        const option = document.createElement('option');
+        option.textContent = `${voice.name} (${voice.lang})`;
+        option.value = voice.voiceURI;
+        if (voice.voiceURI === savedVoiceURI) {
+          option.selected = true;
+        }
+        voiceSelect.appendChild(option);
+      });
+    }
+    populateVoiceList();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = populateVoiceList;
+    }
+    voiceSelect.addEventListener('change', () => {
+      localStorage.setItem('jarvisSelectedVoiceURI', voiceSelect.value);
+    });
+
     function pickVoice() {
       const vs = speechSynthesis.getVoices();
-      // Prefer a crisp English voice; fall back to the first available.
-      return vs.find(v => /en(-|_)?GB/i.test(v.lang) && /male|daniel|arthur/i.test(v.name))
-          || vs.find(v => /Daniel|Arthur|Google UK English Male/i.test(v.name))
-          || vs.find(v => /^en/i.test(v.lang)) || vs[0];
+      const savedVoiceURI = localStorage.getItem('jarvisSelectedVoiceURI');
+      if (savedVoiceURI) {
+        const matched = vs.find(v => v.voiceURI === savedVoiceURI);
+        if (matched) return matched;
+      }
+      // Prioritize premium/high-quality English male voices (macOS/Chrome/Windows)
+      const premiumMaleNames = /daniel|oliver|evan|nathan|arthur|google.*male|microsoft.*david/i;
+      const premiumMale = vs.find(v => /^en/i.test(v.lang) && premiumMaleNames.test(v.name));
+      if (premiumMale) return premiumMale;
+
+      // Fall back to any English voice that explicitly has "male" in the name
+      const anyMale = vs.find(v => /^en/i.test(v.lang) && /male/i.test(v.name));
+      if (anyMale) return anyMale;
+
+      // Fall back to any English voice
+      const anyEnglish = vs.find(v => /^en/i.test(v.lang));
+      if (anyEnglish) return anyEnglish;
+
+      // Ultimate fallback
+      return vs[0];
     }
     function speak(text) {
       if (!voiceOn || !('speechSynthesis' in window)) return;
@@ -321,25 +374,46 @@
     const micBtn = document.getElementById('micBtn');
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recog = null, listening = false;
+    let silenceTimer = null;
     if (SR) {
       recog = new SR();
-      recog.lang = 'en-US'; recog.interimResults = true; recog.continuous = false;
+      recog.lang = 'en-US'; recog.interimResults = true; recog.continuous = true;
+      
+      const resetSilenceTimer = () => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          if (listening) {
+            recog.stop();
+          }
+        }, 3000); // Wait 3.0s of silence before auto-submitting
+      };
+
       recog.onresult = (e) => {
         let t = '';
         for (const r of e.results) t += r[0].transcript;
         input.value = t;
+        resetSilenceTimer();
       };
       recog.onend = () => {
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
         listening = false; micBtn.classList.remove('listening');
         if (state === 'listening') setState('idle');
         if (input.value.trim()) submit();
       };
-      recog.onerror = () => { listening = false; micBtn.classList.remove('listening'); setState('idle'); };
+      recog.onerror = () => {
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        listening = false; micBtn.classList.remove('listening'); setState('idle');
+      };
       micBtn.addEventListener('click', () => {
-        if (listening) { recog.stop(); return; }
+        if (listening) {
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+          recog.stop();
+          return;
+        }
         speechSynthesis.cancel();
         input.value = ''; listening = true;
         micBtn.classList.add('listening'); setState('listening');
+        resetSilenceTimer();
         try { recog.start(); } catch (_) {}
       });
     } else {

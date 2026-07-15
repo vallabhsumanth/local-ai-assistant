@@ -47,6 +47,58 @@ SYSTEM_PROMPT = (
     "anything irreversible, explain it and ask first."
 )
 
+BRAND_CONTEXT = (
+    "\n\nBRAND CONTEXT — Nap Chief:\n"
+    "The user's company is Nap Chief (napchief.com), a kidswear and kids' "
+    "sleepwear brand. It sells direct via Shopify and through marketplaces "
+    "(Amazon, Flipkart, Myntra, Nykaa). Its ambition is to scale into a major "
+    "kidswear player — the kind of scale H&M Kids operates at — and it "
+    "directly competes with brands including Nauti Nati, Hopscotch, and "
+    "Klinkara.\n"
+    "\n"
+    "When asked about brand strategy, competitors, positioning, or how to "
+    "grow or beat competitors:\n"
+    "- You MUST call a tool (fetch_page or web_search) before making any "
+    "specific claim about a competitor. Never write 'based on my research' "
+    "or 'based on the fetched page' unless you actually called that tool "
+    "this turn.\n"
+    "- Only state what the tool result actually contains. A fetched "
+    "homepage's text is what it is — don't infer things not present in it "
+    "(e.g. don't claim to know their Instagram or photography style from a "
+    "homepage's product/price text alone). If the tool didn't return that "
+    "kind of information, say so plainly instead of guessing.\n"
+    "- web_search is weak for brand/company names and often returns "
+    "nothing. When it does, call fetch_page DIRECTLY on the competitor's "
+    "site instead: Nauti Nati -> nautinati.com, Hopscotch -> hopscotch.in. "
+    "If a site doesn't load or a domain is unconfirmed (e.g. Klinkara), say "
+    "so rather than inventing details.\n"
+    "- If you have not fetched any real data this turn, label your answer "
+    "clearly as a general hypothesis, not a finding, and offer to research "
+    "it properly.\n"
+    "- Give a genuinely fresh angle every time. Check the recent conversation "
+    "before answering — if you already gave a recommendation, don't repeat "
+    "it; switch lenses instead: pricing & value, product range & assortment, "
+    "marketing & social content, customer experience & reviews, "
+    "marketplace/distribution presence, or logistics/delivery & returns.\n"
+    "- Be honest about uncertainty. If you don't have real data (e.g. Nap "
+    "Chief's own sales figures), say so rather than inventing numbers.\n"
+    "- General questions unrelated to the brand are answered normally — this "
+    "context only applies when the user is asking about Nap Chief, its "
+    "market, or its competitors."
+)
+
+SYSTEM_PROMPT += BRAND_CONTEXT
+
+DEEP_THINK_INSTRUCTIONS = (
+    "\n\nDEEP RESEARCH MODE IS ON for this question. Take your time: make at "
+    "least 2-3 separate tool calls covering different angles or sources "
+    "before answering (e.g. more than one search query, or a search plus "
+    "fetching a specific page). Cross-check what you find rather than "
+    "settling on the first result. Only give your final answer once you've "
+    "gathered enough to be thorough."
+)
+DEEP_THINK_MAX_STEPS = 12
+
 HELP = """\
 JARVIS commands (Phase 1)
   /help                     show this help
@@ -73,6 +125,7 @@ class Assistant:
             else None
         )
         self.cache = ResponseCache()
+        self.deep_think = False
 
     _AFFIRM = {"confirm", "yes", "send", "send it", "yes send", "confirm send",
                "ok", "okay", "yep", "go ahead", "/confirm", "do it"}
@@ -103,23 +156,29 @@ class Assistant:
         self.memory.add_turn(self.session, "user", text)
 
         # Fast path: a similar question answered recently → skip the LLM.
-        cached = self.cache.get(text)
-        if cached is not None:
-            self.memory.add_turn(self.session, "assistant", cached)
-            return cached
+        # Deep-think mode always researches fresh, so it skips the cache
+        # entirely (both reading and writing).
+        if not self.deep_think:
+            cached = self.cache.get(text)
+            if cached is not None:
+                self.memory.add_turn(self.session, "assistant", cached)
+                return cached
 
         history = self.memory.recent_turns(self.session, limit=20)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+        system = SYSTEM_PROMPT + (DEEP_THINK_INSTRUCTIONS if self.deep_think else "")
+        messages = [{"role": "system", "content": system}, *history]
         try:
             if self.agent is not None:
-                reply = self.agent.run(messages)
+                max_steps = DEEP_THINK_MAX_STEPS if self.deep_think else None
+                reply = self.agent.run(messages, max_steps=max_steps)
             else:
                 reply = self.provider.chat(messages)
         except Exception as exc:  # noqa: BLE001
             log.exception("LLM call failed")
             reply = f"[error talking to LLM: {exc}]"
         self.memory.add_turn(self.session, "assistant", reply)
-        self.cache.put(text, reply)
+        if not self.deep_think:
+            self.cache.put(text, reply)
         return reply
 
     # --- built-in commands ---

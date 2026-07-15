@@ -51,6 +51,14 @@ _PERSONAL = (
     "remember", "recall", "forget", "my name", "who am i",
     "what is my", "what's my", "whats my", "do i have",
 )
+# Brand/strategy/competitor questions — must give a fresh angle every time,
+# never a canned repeat (see BRAND_CONTEXT in core/assistant.py).
+_STRATEGY = (
+    "strategy", "strategies", "compete", "competitor", "competitors",
+    "competition", "beat", "scale", "scaling", "positioning", "insight",
+    "insights", "growth", "market share", "nauti nati", "hopscotch",
+    "klinkara", "nap chief", "brand",
+)
 
 
 def _words(text: str) -> list[str]:
@@ -81,6 +89,8 @@ class ResponseCache:
         if any(k in q for k in _VOLATILE):
             return False
         if any(k in q for k in _PERSONAL):
+            return False
+        if any(k in q for k in _STRATEGY):
             return False
         return True
 

@@ -134,6 +134,14 @@ class TestCache(unittest.TestCase):
         c.put("What is my name?", "Asim.")
         self.assertIsNone(c.get("What is my name?"))
 
+    def test_brand_strategy_not_cached(self):
+        from core.cache import ResponseCache
+        c = ResponseCache()
+        c.put("How can Nap Chief beat Nauti Nati?", "Insight A.")
+        self.assertIsNone(c.get("How can Nap Chief beat Nauti Nati?"))
+        c.put("What's our growth strategy against Hopscotch?", "Insight B.")
+        self.assertIsNone(c.get("What's our growth strategy against Hopscotch?"))
+
     def test_expiry(self):
         from core.cache import ResponseCache
         c = ResponseCache(ttl=100)

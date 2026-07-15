@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JARVIS</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23060a0e'/%3E%3Ccircle cx='16' cy='16' r='10' fill='%234fe3c8'/%3E%3C/svg%3E" />
   <style>
     :root {
       --bg-0: #060a0e;
@@ -90,6 +91,12 @@
     .bubble .body { padding: 13px 16px; border-radius: 13px; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; max-width: 100%; }
     .turn.jarvis .body { background: var(--surface); border: 1px solid var(--border); border-top-left-radius: 4px; }
     .turn.user .body { background: linear-gradient(135deg, #17222b, #111a22); border: 1px solid var(--border-strong); border-top-right-radius: 4px; }
+    .body strong { color: var(--text); font-weight: 700; }
+    .body em { font-style: italic; }
+    .body code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+    .body ul, .body ol { margin: 4px 0 4px 22px; padding: 0; }
+    .body li { margin: 3px 0; }
+    .body .md-heading { font-weight: 700; margin: 2px 0; }
 
     .dots { display: inline-flex; gap: 5px; padding: 4px 0; }
     .dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); opacity: .4; animation: bounce 1.2s infinite; }
@@ -167,6 +174,9 @@
         </button>
         <button class="iconbtn" id="fsBtn" title="Fullscreen">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg>
+        </button>
+        <button class="iconbtn" id="deepBtn" title="Deep Research mode: slower, multi-angle research before answering">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z"/></svg>
         </button>
       </div>
     </div>
@@ -272,12 +282,73 @@
     function setState(s) {
       state = s;
       const busy = s !== 'idle';
-      const labels = { thinking: 'Processing', responding: 'Responding', listening: 'Listening' };
+      const labels = { thinking: deepThink ? 'Researching deeply…' : 'Processing', responding: 'Responding', listening: 'Listening' };
       const label = labels[s] || 'Standing by';
       statusText.textContent = busy ? label : 'Ready';
       orbLabel.innerHTML = busy ? `<b>${label}</b>` : label;
       topPill.className = 'pill' + (busy ? ' busy' : '');
       statusPill.className = 'pill' + (busy ? ' busy' : '');
+    }
+
+    /* ---------------- safe Markdown rendering ---------------- */
+    // JARVIS's replies come out as Markdown (**bold**, lists, etc). We escape
+    // any real HTML first (so the model's own text can never inject markup),
+    // then convert only a safe subset of Markdown syntax into real tags.
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function inlineMarkdown(s) {
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+      s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+      s = s.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      return s;
+    }
+    function renderMarkdown(raw) {
+      const lines = escapeHtml(raw).split('\n');
+      const lineType = (line) => {
+        if (/^\s*[-*]\s+/.test(line)) return 'ul';
+        if (/^\s*\d+[.)]\s+/.test(line)) return 'ol';
+        if (/^\s*#{1,6}\s+/.test(line)) return 'heading';
+        if (line.trim() === '') return 'blank';
+        return 'text';
+      };
+      let html = '', listType = null;
+      const closeList = () => { if (listType) { html += `</${listType}>`; listType = null; } };
+
+      for (let idx = 0; idx < lines.length; idx++) {
+        const line = lines[idx];
+        const type = lineType(line);
+
+        if (type === 'blank') {
+          // A loose list (blank lines between items) should stay one list —
+          // only close if the list doesn't actually continue after the gap.
+          let next = idx + 1;
+          while (next < lines.length && lineType(lines[next]) === 'blank') next++;
+          const nextType = next < lines.length ? lineType(lines[next]) : null;
+          if (listType && nextType === listType) continue;
+          closeList();
+          html += '<br>';
+          continue;
+        }
+        if (type === 'ul') {
+          if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; }
+          html += `<li>${inlineMarkdown(line.replace(/^\s*[-*]\s+/, ''))}</li>`;
+        } else if (type === 'ol') {
+          if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; }
+          html += `<li>${inlineMarkdown(line.replace(/^\s*\d+[.)]\s+/, ''))}</li>`;
+        } else if (type === 'heading') {
+          closeList();
+          html += `<div class="md-heading">${inlineMarkdown(line.replace(/^\s*#{1,6}\s+/, ''))}</div>`;
+        } else {
+          closeList();
+          html += `<div>${inlineMarkdown(line)}</div>`;
+        }
+      }
+      closeList();
+      return html;
     }
 
     function turn(cls, who) {
@@ -295,13 +366,26 @@
       setState('responding'); let i = 0;
       speak(text);
       (function step() {
-        node.textContent = text.slice(0, i);
+        node.innerHTML = renderMarkdown(text.slice(0, i));
         thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
         if (i++ < text.length) setTimeout(step, 7); else setState('idle');
       })();
     }
 
     /* ---------------- voice output (free, browser TTS) ---------------- */
+    // Strip Markdown syntax before speaking — otherwise TTS reads the raw
+    // symbols aloud ("asterisk asterisk Rebranding asterisk asterisk").
+    function stripMarkdownForSpeech(text) {
+      return text
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/__(.+?)__/g, '$1')
+        .replace(/\*(.+?)\*/g, '$1')
+        .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/^\s*#{1,6}\s+/gm, '')
+        .replace(/^\s*[-*]\s+/gm, '')
+        .replace(/^\s*\d+[.)]\s+/gm, '');
+    }
     let voiceOn = localStorage.getItem('jarvisVoice') !== 'off';
     const voiceBtn = document.getElementById('voiceBtn');
     const voiceSelect = document.getElementById('voiceSelect');
@@ -358,7 +442,8 @@
     function speak(text) {
       if (!voiceOn || !('speechSynthesis' in window)) return;
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text.slice(0, 600));
+      const clean = stripMarkdownForSpeech(text);
+      const u = new SpeechSynthesisUtterance(clean.slice(0, 600));
       const v = pickVoice(); if (v) u.voice = v;
       u.rate = 1.02; u.pitch = 0.95;
       speechSynthesis.speak(u);
@@ -428,12 +513,23 @@
       else document.documentElement.requestFullscreen().catch(() => {});
     });
 
+    /* ---------------- deep research mode ---------------- */
+    let deepThink = false;
+    const deepBtn = document.getElementById('deepBtn');
+    deepBtn.addEventListener('click', () => {
+      deepThink = !deepThink;
+      deepBtn.classList.toggle('active', deepThink);
+      deepBtn.title = deepThink
+        ? 'Deep Research mode: ON — answers take longer, research multiple angles'
+        : 'Deep Research mode: slower, multi-angle research before answering';
+    });
+
     fetch('/health').then(r => r.json())
       .then(d => document.getElementById('prov').textContent = d.provider || '?')
       .catch(() => document.getElementById('prov').textContent = 'offline');
 
     setState('idle');
-    turn('jarvis', 'JARVIS').textContent = "Good day. I'm online and ready to assist. How can I help?";
+    turn('jarvis', 'JARVIS').innerHTML = renderMarkdown("Good day. I'm online and ready to assist. How can I help?");
 
     async function submit() {
       const message = input.value.trim(); if (!message) return;
@@ -442,10 +538,10 @@
       const bodyNode = turn('jarvis', 'JARVIS');
       bodyNode.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
       try {
-        const res = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, session }) });
+        const res = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, session, deep_think: deepThink }) });
         const data = await res.json();
         bodyNode.textContent = ''; typeOut(bodyNode, data.reply || '(no reply)');
-      } catch (err) { bodyNode.textContent = 'Connection error: ' + err; setState('idle'); }
+      } catch (err) { bodyNode.innerHTML = renderMarkdown('Connection error: ' + err); setState('idle'); }
       finally { send.disabled = false; input.focus(); }
     }
     send.addEventListener('click', submit);

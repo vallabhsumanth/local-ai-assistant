@@ -38,6 +38,7 @@ ALLOWED_PACKAGES: dict[str, str] = {
     "uvicorn": "uvicorn[standard]",
     "pydantic": "pydantic",
     "playwright": "playwright",
+    "ddgs": "ddgs",
 }
 
 REQUIREMENTS = settings.root / "requirements.txt"

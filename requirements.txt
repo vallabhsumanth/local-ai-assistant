@@ -9,6 +9,9 @@ supabase
 # Headless browser automation (also needs: playwright install chromium).
 playwright
 
+# Free web search, no API key required.
+ddgs
+
 # Optional LLM providers — installed on demand by core/deps.py when selected:
 #   anthropic   # for JARVIS_LLM_PROVIDER=anthropic
 #   openai      # for JARVIS_LLM_PROVIDER=openai

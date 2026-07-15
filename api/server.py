@@ -6,7 +6,8 @@ Railway (which needs a process listening on $PORT).
 Endpoints:
   GET  /            -> serves the chat UI (frontend/index.html)
   GET  /health      -> {"status": "ok"}  (Railway healthcheck)
-  POST /chat        -> {"reply": "..."}   body: {"message": str, "session": str}
+  POST /chat        -> {"reply": "..."}   body: {"message": str, "session": str,
+                                                  "deep_think": bool = False}
 
 Run modes:
   - Local dev:  uvicorn api.server:app --reload   (or ./serve.sh)
@@ -51,6 +52,7 @@ _assistant = Assistant()
 class ChatIn(BaseModel):
     message: str
     session: str = "web"
+    deep_think: bool = False
 
 
 class ChatOut(BaseModel):
@@ -73,6 +75,7 @@ def index() -> str:
 @app.post("/chat", response_model=ChatOut)
 def chat(body: ChatIn) -> ChatOut:
     _assistant.session = body.session
+    _assistant.deep_think = body.deep_think
     reply = _assistant.handle(body.message)
     if reply == "__quit__":
         reply = "(quit is a terminal-only command; just close the tab in the web UI)"

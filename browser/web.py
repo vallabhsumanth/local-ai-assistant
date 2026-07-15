@@ -2,7 +2,8 @@
 
 Phase 2 exposes read-only web capabilities — the safe, high-value set:
   - `fetch_page(url)`  : load a page and return its title + visible text
-  - `web_search(query)`: DuckDuckGo search, returns top results
+  - `web_search(query)`: real web search via `ddgs` (free, no key), returns
+                          top results; upgrades to Brave if BRAVE_API_KEY is set
   - `screenshot(url)`  : save a PNG of a page into screenshots/
 
 These run against a fresh headless Chromium per call (simple + thread-safe;
@@ -79,15 +80,14 @@ def fetch_page(url: str) -> dict:
 def web_search(query: str, limit: int = 5) -> list[dict]:
     """Search the web, return [{title, url, snippet}].
 
-    Uses the Brave Search API when BRAVE_API_KEY is set (real ranked web
-    results); otherwise falls back to DuckDuckGo's keyless Instant Answer API
-    (reliable, no CAPTCHA, best for factual/entity queries). Note: the fallback
-    is lighter than full web ranking — set BRAVE_API_KEY for product-grade
-    results. Get a free key at https://brave.com/search/api/.
+    Priority:
+    1. Brave Search API, if BRAVE_API_KEY is set (best quality, paid).
+    2. `ddgs` — free, no key, real ranked DuckDuckGo web results. Default path.
+    3. DuckDuckGo's Instant Answer API — last-resort fallback if `ddgs` errors
+       (only handles narrow factual/entity queries, not general search).
     """
     import os
     requests = ensure_package("requests")
-    ua = {"User-Agent": UA}
 
     brave_key = os.environ.get("BRAVE_API_KEY", "")
     if brave_key:
@@ -104,14 +104,28 @@ def web_search(query: str, limit: int = 5) -> list[dict]:
                     "snippet": h.get("description", "")} for h in hits[:limit]]
             log.info("web_search[brave] %r -> %d", query, len(out))
             return out
-        except Exception as exc:  # noqa: BLE001 - fall through to DDG
-            log.warning("Brave search failed (%s); using DDG fallback.", exc)
+        except Exception as exc:  # noqa: BLE001 - fall through
+            log.warning("Brave search failed (%s); trying ddgs.", exc)
 
-    # Keyless fallback: DuckDuckGo Instant Answer JSON API
+    ddgs_mod = ensure_package("ddgs")
+    if ddgs_mod is not None:
+        try:
+            from ddgs import DDGS
+            with DDGS() as ddgs:
+                hits = list(ddgs.text(query, max_results=limit))
+            out = [{"title": h.get("title", ""), "url": h.get("href", ""),
+                    "snippet": h.get("body", "")} for h in hits[:limit]]
+            if out:
+                log.info("web_search[ddgs] %r -> %d", query, len(out))
+                return out
+        except Exception as exc:  # noqa: BLE001 - fall through to last resort
+            log.warning("ddgs search failed (%s); using Instant Answer fallback.", exc)
+
+    # Last-resort keyless fallback: DuckDuckGo Instant Answer API (facts only).
     j = requests.get(
         "https://api.duckduckgo.com/",
         params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
-        headers=ua, timeout=20,
+        headers={"User-Agent": UA}, timeout=20,
     ).json()
 
     results: list[dict] = []
@@ -135,7 +149,7 @@ def web_search(query: str, limit: int = 5) -> list[dict]:
             if len(results) >= limit:
                 return
     _walk(j.get("RelatedTopics") or [])
-    log.info("web_search[ddg] %r -> %d", query, len(results))
+    log.info("web_search[instant-answer] %r -> %d", query, len(results))
     return results[:limit]
 
 

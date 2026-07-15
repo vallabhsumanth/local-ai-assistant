@@ -28,9 +28,13 @@ class Agent:
         self.tools = {t.name: t for t in tools}
         self._specs = [t.spec() for t in tools]
 
-    def run(self, messages: list[dict]) -> str:
-        """Drive the tool loop. `messages` is mutated with intermediate turns."""
-        for step in range(MAX_STEPS):
+    def run(self, messages: list[dict], max_steps: int | None = None) -> str:
+        """Drive the tool loop. `messages` is mutated with intermediate turns.
+
+        `max_steps` overrides the default budget — used by deep-research mode
+        to allow more rounds of research before forcing a final answer.
+        """
+        for step in range(max_steps if max_steps is not None else MAX_STEPS):
             resp = self.provider.chat_with_tools(messages, self._specs)
             calls = resp.get("tool_calls") or []
 

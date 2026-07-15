@@ -12,6 +12,8 @@ assistant falls back to plain chat.
 
 from __future__ import annotations
 
+from typing import Iterator
+
 from tools.registry import Tool
 from utils.logger import get_logger
 
@@ -57,6 +59,51 @@ class Agent:
         # Ran out of steps — ask for a plain summary without tools.
         final = self.provider.chat_with_tools(messages, [])
         return final.get("content", "") or "(stopped after too many tool calls)"
+
+    def run_stream(self, messages: list[dict], max_steps: int | None = None) -> Iterator[dict]:
+        """Streaming variant of `run()`, for live typing + a real Stop button.
+
+        Yields {"type": "delta", "text": str} chunks as the model's final
+        answer is generated, then {"type": "done", "text": full_reply} once.
+        Tool-calling rounds aren't user-visible text, so they aren't streamed
+        chunk-by-chunk — only invoked and looped, same as `run()`.
+        """
+        steps = max_steps if max_steps is not None else MAX_STEPS
+        full_text = ""
+        for step in range(steps):
+            tool_calls: list[dict] = []
+            step_text = ""
+            raw_msg = None
+            for chunk in self.provider.chat_stream(messages, self._specs):
+                if "delta" in chunk:
+                    step_text += chunk["delta"]
+                    full_text += chunk["delta"]
+                    yield {"type": "delta", "text": chunk["delta"]}
+                if chunk.get("done"):
+                    tool_calls = chunk.get("tool_calls") or []
+                    raw_msg = chunk.get("raw")
+
+            if not tool_calls:
+                yield {"type": "done", "text": full_text}
+                return
+
+            messages.append(raw_msg or {"role": "assistant", "content": step_text})
+            for call in tool_calls:
+                name, args = call["name"], call.get("args") or {}
+                result = self._invoke(name, args)
+                log.info("tool %s(%s) -> %d chars", name, args, len(result))
+                messages.append({
+                    "role": "tool",
+                    "tool_name": name,
+                    "content": result[:MAX_TOOL_OUTPUT],
+                })
+
+        # Ran out of steps — ask for a plain summary without tools.
+        final = self.provider.chat_with_tools(messages, [])
+        text = final.get("content", "") or "(stopped after too many tool calls)"
+        full_text += text
+        yield {"type": "delta", "text": text}
+        yield {"type": "done", "text": full_text}
 
     def _invoke(self, name: str, args: dict) -> str:
         tool = self.tools.get(name)

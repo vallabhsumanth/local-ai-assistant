@@ -14,7 +14,9 @@ manager the first time you select that provider.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from typing import Iterator
 
 from config.settings import settings
 from core.deps import ensure_package
@@ -40,6 +42,20 @@ class LLMProvider(ABC):
         don't support tools fall back to plain chat (no tool_calls).
         """
         return {"content": self.chat(messages), "tool_calls": [], "raw": None}
+
+    def chat_stream(self, messages: list[Message], tools: list[dict]) -> Iterator[dict]:
+        """Streaming variant, used for live typing + a real Stop button.
+
+        Yields {"delta": str} chunks as text becomes available, then a final
+        {"done": True, "tool_calls": [...], "raw": ...}. Providers without
+        real streaming support fall back to yielding the whole reply as one
+        chunk (still correct, just not incremental).
+        """
+        result = self.chat_with_tools(messages, tools)
+        if result.get("content"):
+            yield {"delta": result["content"]}
+        yield {"done": True, "tool_calls": result.get("tool_calls") or [],
+               "raw": result.get("raw")}
 
 
 class EchoProvider(LLMProvider):
@@ -138,6 +154,43 @@ class OllamaProvider(LLMProvider):
             fn = tc.get("function", {})
             calls.append({"name": fn.get("name", ""), "args": fn.get("arguments") or {}})
         return {"content": msg.get("content", ""), "tool_calls": calls, "raw": msg}
+
+    def chat_stream(self, messages: list[Message], tools: list[dict]) -> Iterator[dict]:
+        payload: dict = {"messages": messages}
+        if tools:
+            payload["tools"] = tools
+        resp = self._requests.post(
+            f"{settings.ollama_host}/api/chat",
+            json={"model": self._model, "stream": True, **payload},
+            stream=True, timeout=180,
+        )
+        resp.raise_for_status()
+        content = ""
+        raw_tool_calls = None
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                msg = chunk.get("message") or {}
+                delta = msg.get("content") or ""
+                if delta:
+                    content += delta
+                    yield {"delta": delta}
+                if msg.get("tool_calls"):
+                    raw_tool_calls = msg["tool_calls"]
+                if chunk.get("done"):
+                    break
+        finally:
+            resp.close()
+        calls = []
+        for tc in raw_tool_calls or []:
+            fn = tc.get("function", {})
+            calls.append({"name": fn.get("name", ""), "args": fn.get("arguments") or {}})
+        raw = {"role": "assistant", "content": content}
+        if raw_tool_calls:
+            raw["tool_calls"] = raw_tool_calls
+        yield {"done": True, "tool_calls": calls, "raw": raw}
 
 
 _PROVIDERS: dict[str, type[LLMProvider]] = {

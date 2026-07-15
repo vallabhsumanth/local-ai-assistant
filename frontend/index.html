@@ -110,6 +110,8 @@
     .composer #send { background: var(--accent); color: #032019; border: none; border-radius: 11px; padding: 11px 20px; font-weight: 600; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 7px; transition: .18s; }
     .composer #send:hover:not(:disabled) { filter: brightness(1.1); box-shadow: 0 0 16px var(--accent-glow); }
     .composer #send:disabled { opacity: .4; cursor: default; }
+    .composer #send.stop-mode { background: #ff6b6b; color: #2a0a0a; }
+    .composer #send.stop-mode:hover { box-shadow: 0 0 16px rgba(255,107,107,.5); }
     .hint { max-width: 780px; margin: 10px auto 0; font-size: 11.5px; color: var(--text-faint); text-align: center; }
     .hint code { font-family: var(--mono); color: var(--text-dim); background: var(--surface-2); padding: 1px 6px; border-radius: 5px; }
 
@@ -362,15 +364,6 @@
       thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
       return body;
     }
-    function typeOut(node, text) {
-      setState('responding'); let i = 0;
-      speak(text);
-      (function step() {
-        node.innerHTML = renderMarkdown(text.slice(0, i));
-        thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
-        if (i++ < text.length) setTimeout(step, 7); else setState('idle');
-      })();
-    }
 
     /* ---------------- voice output (free, browser TTS) ---------------- */
     // Strip Markdown syntax before speaking — otherwise TTS reads the raw
@@ -531,20 +524,64 @@
     setState('idle');
     turn('jarvis', 'JARVIS').innerHTML = renderMarkdown("Good day. I'm online and ready to assist. How can I help?");
 
+    const SEND_ICON = 'Send <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+    const STOP_ICON = 'Stop <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>';
+    let currentAbort = null;
+
+    function setSendMode(mode) {
+      if (mode === 'stop') {
+        send.innerHTML = STOP_ICON;
+        send.classList.add('stop-mode');
+        send.onclick = () => { if (currentAbort) currentAbort.abort(); };
+      } else {
+        send.innerHTML = SEND_ICON;
+        send.classList.remove('stop-mode');
+        send.onclick = submit;
+      }
+    }
+
     async function submit() {
+      if (currentAbort) return; // a response is already in flight
       const message = input.value.trim(); if (!message) return;
       turn('user', session).textContent = message;
-      input.value = ''; send.disabled = true; setState('thinking');
+      input.value = ''; setState('thinking'); setSendMode('stop');
       const bodyNode = turn('jarvis', 'JARVIS');
       bodyNode.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+
+      currentAbort = new AbortController();
+      let accumulated = '', firstChunk = true;
       try {
-        const res = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, session, deep_think: deepThink }) });
-        const data = await res.json();
-        bodyNode.textContent = ''; typeOut(bodyNode, data.reply || '(no reply)');
-      } catch (err) { bodyNode.innerHTML = renderMarkdown('Connection error: ' + err); setState('idle'); }
-      finally { send.disabled = false; input.focus(); }
+        const res = await fetch('/chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, session, deep_think: deepThink }),
+          signal: currentAbort.signal,
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (firstChunk) { setState('responding'); firstChunk = false; }
+          accumulated += decoder.decode(value, { stream: true });
+          bodyNode.innerHTML = renderMarkdown(accumulated);
+          thread.parentElement.scrollTop = thread.parentElement.scrollHeight;
+        }
+        if (accumulated) speak(accumulated);
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          accumulated += '\n\n*(stopped)*';
+          bodyNode.innerHTML = renderMarkdown(accumulated);
+        } else {
+          bodyNode.innerHTML = renderMarkdown('Connection error: ' + err);
+        }
+      } finally {
+        currentAbort = null;
+        setSendMode('send');
+        setState('idle');
+        input.focus();
+      }
     }
-    send.addEventListener('click', submit);
+    setSendMode('send');
     input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
   </script>
 </body>

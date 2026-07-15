@@ -12,6 +12,7 @@ planner/executor described in the original spec.
 from __future__ import annotations
 
 import shlex
+from typing import Iterator
 
 from core.agent import Agent
 from core.cache import ResponseCache
@@ -180,6 +181,76 @@ class Assistant:
         if not self.deep_think:
             self.cache.put(text, reply)
         return reply
+
+    # --- streaming path (web UI only — real live typing + a working Stop
+    # button). The terminal REPL keeps using handle()/_chat() above, untouched. ---
+    def handle_stream(self, text: str) -> Iterator[str]:
+        """Generator version of handle(): yields text chunks as they arrive.
+
+        Non-chat paths (slash commands, pending email confirm/cancel) yield
+        their single reply as one chunk; only real LLM chat truly streams.
+        """
+        text = text.strip()
+        if not text:
+            return
+
+        if self.mailer.has_pending():
+            low = text.lower().rstrip(".!")
+            if low in self._AFFIRM:
+                yield self.mailer.confirm()
+            elif low in self._DENY:
+                yield self.mailer.cancel()
+            else:
+                yield self.mailer.pending_reminder()
+            return
+
+        if text.startswith("/"):
+            result = self._command(text)
+            if result == "__quit__":
+                result = "(quit is a terminal-only command; just close the tab in the web UI)"
+            yield result
+            return
+
+        yield from self.stream_chat(text)
+
+    def stream_chat(self, text: str) -> Iterator[str]:
+        """Generator version of _chat(): yields text deltas as they're
+        generated, then does the same memory/cache bookkeeping as _chat()
+        once the full reply is known.
+        """
+        self.memory.add_turn(self.session, "user", text)
+
+        if not self.deep_think:
+            cached = self.cache.get(text)
+            if cached is not None:
+                self.memory.add_turn(self.session, "assistant", cached)
+                yield cached
+                return
+
+        history = self.memory.recent_turns(self.session, limit=20)
+        system = SYSTEM_PROMPT + (DEEP_THINK_INSTRUCTIONS if self.deep_think else "")
+        messages = [{"role": "system", "content": system}, *history]
+        full_text = ""
+        try:
+            if self.agent is not None:
+                max_steps = DEEP_THINK_MAX_STEPS if self.deep_think else None
+                for chunk in self.agent.run_stream(messages, max_steps=max_steps):
+                    if chunk["type"] == "delta":
+                        full_text += chunk["text"]
+                        yield chunk["text"]
+                    else:
+                        full_text = chunk["text"]
+            else:
+                full_text = self.provider.chat(messages)
+                yield full_text
+        except Exception as exc:  # noqa: BLE001
+            log.exception("LLM call failed")
+            full_text = f"[error talking to LLM: {exc}]"
+            yield full_text
+
+        self.memory.add_turn(self.session, "assistant", full_text)
+        if not self.deep_think:
+            self.cache.put(text, full_text)
 
     # --- built-in commands ---
     def _command(self, text: str) -> str:

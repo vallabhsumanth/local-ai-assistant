@@ -6,8 +6,10 @@ Railway (which needs a process listening on $PORT).
 Endpoints:
   GET  /            -> serves the chat UI (frontend/index.html)
   GET  /health      -> {"status": "ok"}  (Railway healthcheck)
-  POST /chat        -> {"reply": "..."}   body: {"message": str, "session": str,
-                                                  "deep_think": bool = False}
+  POST /chat        -> streamed plain-text reply (real live typing + a
+                        working Stop button, via an aborted fetch)
+                        body: {"message": str, "session": str,
+                               "deep_think": bool = False}
 
 Run modes:
   - Local dev:  uvicorn api.server:app --reload   (or ./serve.sh)
@@ -35,7 +37,7 @@ if fastapi is None:  # pragma: no cover
     raise SystemExit("fastapi not installed. Run: pip install -r requirements.txt")
 
 from fastapi import FastAPI  # noqa: E402
-from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
+from fastapi.responses import HTMLResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
@@ -55,11 +57,6 @@ class ChatIn(BaseModel):
     deep_think: bool = False
 
 
-class ChatOut(BaseModel):
-    reply: str
-    session: str
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "provider": _assistant.provider.name}
@@ -72,14 +69,16 @@ def index() -> str:
     return "<h1>JARVIS</h1><p>POST /chat with {\"message\": \"...\"}</p>"
 
 
-@app.post("/chat", response_model=ChatOut)
-def chat(body: ChatIn) -> ChatOut:
+@app.post("/chat")
+def chat(body: ChatIn) -> StreamingResponse:
     _assistant.session = body.session
     _assistant.deep_think = body.deep_think
-    reply = _assistant.handle(body.message)
-    if reply == "__quit__":
-        reply = "(quit is a terminal-only command; just close the tab in the web UI)"
-    return ChatOut(reply=reply, session=body.session)
+    # A plain streamed text body: the browser reads it incrementally for real
+    # live typing, and aborting the fetch (Stop button) ends the generator —
+    # closing the underlying Ollama connection so it stops generating too.
+    return StreamingResponse(
+        _assistant.handle_stream(body.message), media_type="text/plain; charset=utf-8"
+    )
 
 
 def main() -> None:

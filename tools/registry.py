@@ -85,8 +85,14 @@ def build_registry(memory, mailer=None) -> list[Tool]:
         ),
         Tool(
             "remember_fact",
-            "Store a durable fact about the user for later (preferences, names, "
-            "common folders). Use when the user says 'remember ...'.",
+            "Store a durable fact about the user for later — their name, role, "
+            "company, preferences, or common folders/tools. Call this whenever "
+            "the user states something like this in normal conversation, even "
+            "if they never say the word 'remember' — e.g. 'I'm Asim' or 'I run "
+            "Nap Chief' should be stored proactively, not just explicit "
+            "'remember X' requests. This is shared across every chat, not just "
+            "the current one, so it's worth capturing. Don't store one-off "
+            "requests, moods, or anything temporary — only durable facts.",
             _obj({
                 "key": {"type": "string", "description": "Short identifier, e.g. 'name'."},
                 "value": {"type": "string", "description": "The value to store."},

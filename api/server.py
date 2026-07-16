@@ -6,10 +6,20 @@ Railway (which needs a process listening on $PORT).
 Endpoints:
   GET  /            -> serves the chat UI (frontend/index.html)
   GET  /health      -> {"status": "ok"}  (Railway healthcheck)
+  GET  /chats       -> [{"session","title","created_at","last_active"}, ...]
+                        the ChatGPT-style chat list, most recent first
+  GET  /chats/{session}/history -> [{"role","content"}, ...] full history
+                        for that chat, used when switching back into it
+  DELETE /chats/{session} -> removes the chat AND its messages from Supabase
+                        (the sidebar's red delete button; permanent, not a
+                        hide-from-list — matches deleting the chat for real)
   POST /chat        -> streamed plain-text reply (real live typing + a
                         working Stop button, via an aborted fetch)
                         body: {"message": str, "session": str,
                                "deep_think": bool = False}
+
+On startup, any chat inactive for more than 20 days is deleted (registry
+entry + its messages) — see Assistant._touch_chat / memory cleanup_expired_chats.
 
 Run modes:
   - Local dev:  uvicorn api.server:app --reload   (or ./serve.sh)
@@ -45,10 +55,18 @@ FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
 # In cloud/web mode we cannot prompt interactively, so deny destructive actions.
 files.set_confirm_handler(lambda msg: (log.warning("Auto-denied (web): %s", msg), False)[1])
 
-app = FastAPI(title="JARVIS", version="1.0")
+app = FastAPI(title="Nap Bot", version="1.0")
 
 # One assistant instance; conversations are separated by `session` in memory.
 _assistant = Assistant()
+
+# Sweep out chats nobody has touched in 20+ days, once per server start.
+try:
+    _removed = _assistant.memory.cleanup_expired_chats(20)
+    if _removed:
+        log.info("Cleaned up %d expired chat(s)", _removed)
+except Exception as exc:  # noqa: BLE001 - never block startup over cleanup
+    log.warning("Chat cleanup failed: %s", exc)
 
 
 class ChatIn(BaseModel):
@@ -66,7 +84,23 @@ def health() -> dict[str, str]:
 def index() -> str:
     if FRONTEND.exists():
         return FRONTEND.read_text(encoding="utf-8")
-    return "<h1>JARVIS</h1><p>POST /chat with {\"message\": \"...\"}</p>"
+    return "<h1>Nap Bot</h1><p>POST /chat with {\"message\": \"...\"}</p>"
+
+
+@app.get("/chats")
+def chats() -> list[dict]:
+    return _assistant.memory.list_chats()
+
+
+@app.get("/chats/{session}/history")
+def chat_history(session: str) -> list[dict]:
+    return _assistant.memory.recent_turns(session, limit=500)
+
+
+@app.delete("/chats/{session}")
+def remove_chat(session: str) -> dict:
+    _assistant.memory.delete_chat(session)
+    return {"deleted": session}
 
 
 @app.post("/chat")
@@ -87,7 +121,7 @@ def main() -> None:
     if uvicorn is None:  # pragma: no cover
         raise SystemExit("uvicorn not installed.")
     port = int(os.environ.get("PORT", "8000"))
-    log.info("Starting JARVIS web on 0.0.0.0:%d", port)
+    log.info("Starting Nap Bot web on 0.0.0.0:%d", port)
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 

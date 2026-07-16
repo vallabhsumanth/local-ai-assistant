@@ -133,6 +133,12 @@ class Assistant:
     _DENY = {"cancel", "no", "discard", "stop", "nevermind", "never mind",
              "/cancel", "don't", "dont"}
 
+    def _touch_chat(self, text: str) -> None:
+        """Register this chat on its first message, or bump its last-active
+        time on every later one — drives the chat list + 20-day cleanup."""
+        title = text.strip()[:60] + ("…" if len(text.strip()) > 60 else "")
+        self.memory.touch_chat(self.session, title=title)
+
     # --- main entry ---
     def handle(self, text: str) -> str:
         text = text.strip()
@@ -155,6 +161,7 @@ class Assistant:
     # --- LLM path ---
     def _chat(self, text: str) -> str:
         self.memory.add_turn(self.session, "user", text)
+        self._touch_chat(text)
 
         # Fast path: a similar question answered recently → skip the LLM.
         # Deep-think mode always researches fresh, so it skips the cache
@@ -219,6 +226,7 @@ class Assistant:
         once the full reply is known.
         """
         self.memory.add_turn(self.session, "user", text)
+        self._touch_chat(text)
 
         if not self.deep_think:
             cached = self.cache.get(text)

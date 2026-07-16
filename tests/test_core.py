@@ -34,6 +34,42 @@ class TestMemory(unittest.TestCase):
         from memory.store import MemoryBackend
         self.assertIsInstance(get_memory(), MemoryBackend)
 
+    def test_touch_chat_creates_then_keeps_title(self):
+        mem = InMemoryMemory()
+        mem.touch_chat("s1", title="First message here")
+        mem.touch_chat("s1", title="Should be ignored")
+        chats = mem.list_chats()
+        self.assertEqual(len(chats), 1)
+        self.assertEqual(chats[0]["title"], "First message here")
+
+    def test_list_chats_orders_by_recency(self):
+        mem = InMemoryMemory()
+        mem.touch_chat("first", title="First")
+        mem.touch_chat("second", title="Second")
+        mem.touch_chat("first")  # re-touch -> should move back to the top
+        chats = mem.list_chats()
+        self.assertEqual(chats[0]["session"], "first")
+
+    def test_delete_chat_removes_registry_and_messages(self):
+        mem = InMemoryMemory()
+        mem.touch_chat("s1", title="Chat 1")
+        mem.add_turn("s1", "user", "hi")
+        mem.delete_chat("s1")
+        self.assertEqual(mem.recent_turns("s1"), [])
+        self.assertEqual(mem.list_chats(), [])
+
+    def test_cleanup_expired_chats(self):
+        from datetime import datetime, timedelta, timezone
+        mem = InMemoryMemory()
+        mem.touch_chat("old", title="Old chat")
+        mem.touch_chat("recent", title="Recent chat")
+        mem._chats["old"]["last_active"] = datetime.now(timezone.utc) - timedelta(days=25)
+        removed = mem.cleanup_expired_chats(days=20)
+        self.assertEqual(removed, 1)
+        sessions = [c["session"] for c in mem.list_chats()]
+        self.assertNotIn("old", sessions)
+        self.assertIn("recent", sessions)
+
 
 class TestLLM(unittest.TestCase):
     def test_get_provider_returns_provider(self):
@@ -67,6 +103,16 @@ class TestAssistant(unittest.TestCase):
         self.assertIn("JARVIS commands", a.handle("/help"))
         self.assertIn("provider", a.handle("/provider").lower())
         self.assertEqual(a.handle("/quit"), "__quit__")
+
+    def test_touch_chat_registers_with_truncated_title(self):
+        # Uses InMemoryMemory directly so this doesn't need a live LLM call.
+        a = Assistant(session="chattest")
+        a.memory = InMemoryMemory()
+        a._touch_chat("Hello there, this is my first message")
+        chats = a.memory.list_chats()
+        self.assertEqual(len(chats), 1)
+        self.assertEqual(chats[0]["session"], "chattest")
+        self.assertIn("Hello there", chats[0]["title"])
 
 
 class TestAgent(unittest.TestCase):

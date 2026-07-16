@@ -17,6 +17,7 @@ The Supabase backend lives in `memory/supabase_store.py`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 
 from config.settings import settings
 from utils.logger import get_logger
@@ -24,6 +25,7 @@ from utils.logger import get_logger
 log = get_logger(__name__)
 
 Turn = dict[str, str]
+ChatInfo = dict[str, str]  # {session, title, created_at, last_active}
 
 
 class MemoryBackend(ABC):
@@ -44,6 +46,25 @@ class MemoryBackend(ABC):
     @abstractmethod
     def all_facts(self) -> dict[str, str]: ...
 
+    # --- chats (ChatGPT-style chat list + 20-day auto-cleanup) ---
+    @abstractmethod
+    def touch_chat(self, session: str, title: str | None = None) -> None:
+        """Register a chat the first time it's used (with `title`), or just
+        bump its last-active time on every later use. Never overwrites an
+        already-set title, so it's safe to call on every message."""
+
+    @abstractmethod
+    def list_chats(self) -> list[ChatInfo]:
+        """All chats, most recently active first."""
+
+    @abstractmethod
+    def delete_chat(self, session: str) -> None:
+        """Remove a chat's registry entry and all its stored messages."""
+
+    @abstractmethod
+    def cleanup_expired_chats(self, days: int = 20) -> int:
+        """Delete chats inactive for more than `days`. Returns how many."""
+
 
 class InMemoryMemory(MemoryBackend):
     """Ephemeral, process-local store. Lost on exit. No disk writes."""
@@ -53,6 +74,7 @@ class InMemoryMemory(MemoryBackend):
     def __init__(self) -> None:
         self._turns: list[tuple[str, str, str]] = []  # (session, role, content)
         self._facts: dict[str, str] = {}
+        self._chats: dict[str, dict] = {}  # session -> {title, created_at, last_active}
 
     def add_turn(self, session: str, role: str, content: str) -> None:
         self._turns.append((session, role, content))
@@ -69,6 +91,38 @@ class InMemoryMemory(MemoryBackend):
 
     def all_facts(self) -> dict[str, str]:
         return dict(self._facts)
+
+    def touch_chat(self, session: str, title: str | None = None) -> None:
+        now = datetime.now(timezone.utc)
+        chat = self._chats.get(session)
+        if chat is None:
+            self._chats[session] = {
+                "session": session,
+                "title": title or "New chat",
+                "created_at": now,
+                "last_active": now,
+            }
+        else:
+            chat["last_active"] = now
+
+    def list_chats(self) -> list[ChatInfo]:
+        chats = sorted(self._chats.values(), key=lambda c: c["last_active"], reverse=True)
+        return [
+            {**c, "created_at": c["created_at"].isoformat(),
+             "last_active": c["last_active"].isoformat()}
+            for c in chats
+        ]
+
+    def delete_chat(self, session: str) -> None:
+        self._chats.pop(session, None)
+        self._turns = [t for t in self._turns if t[0] != session]
+
+    def cleanup_expired_chats(self, days: int = 20) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        expired = [s for s, c in self._chats.items() if c["last_active"] < cutoff]
+        for s in expired:
+            self.delete_chat(s)
+        return len(expired)
 
 
 def get_memory() -> MemoryBackend:

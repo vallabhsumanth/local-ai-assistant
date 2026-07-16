@@ -119,7 +119,7 @@ JARVIS has four layers:
    context each reply.
 2. **Long-term facts** — durable key/value memory the LLM reads/writes via
    `remember_fact` / `recall_fact` tools.
-3. **Storage** — both live in Supabase (`jarvis_conversations`, `jarvis_facts`).
+3. **Storage** — both live in Supabase (`napbot_conversations`, `napbot_facts`).
 4. **Response cache** ([`core/cache.py`](core/cache.py)) — similar/rephrased
    questions return instantly without an LLM call. Uses lexical similarity (no
    model), TTL + LRU, and skips volatile (weather/news/"now") and personal

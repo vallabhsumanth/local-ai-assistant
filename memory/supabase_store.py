@@ -1,25 +1,33 @@
-"""Supabase-backed memory for JARVIS.
+"""Supabase-backed memory for Nap Bot.
 
 Stores conversation history and durable facts in the cloud. The `supabase`
 Python client is installed on demand by the dependency manager the first time
 this backend is used.
 
 Tables (see memory/schema.sql):
-  - jarvis_conversations (id, session, role, content, ts)
-  - jarvis_facts         (key, value, updated)
+  - napbot_conversations (id, session, role, content, ts)
+  - napbot_facts         (key, value, updated)
+  - napbot_chats         (session, title, created_at, last_active)
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from core.deps import ensure_package
 from config.settings import settings
-from memory.store import MemoryBackend, Turn
+from memory.store import ChatInfo, MemoryBackend, Turn
 from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-CONV_TABLE = "jarvis_conversations"
-FACT_TABLE = "jarvis_facts"
+CONV_TABLE = "napbot_conversations"
+FACT_TABLE = "napbot_facts"
+CHATS_TABLE = "napbot_chats"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SupabaseMemory(MemoryBackend):
@@ -72,3 +80,45 @@ class SupabaseMemory(MemoryBackend):
     def all_facts(self) -> dict[str, str]:
         resp = self._client.table(FACT_TABLE).select("key, value").execute()
         return {r["key"]: r["value"] for r in (resp.data or [])}
+
+    def touch_chat(self, session: str, title: str | None = None) -> None:
+        # Try updating an existing chat's last-active time first; only
+        # insert a new row (with the title) if none existed. This never
+        # overwrites a title that's already set.
+        resp = (
+            self._client.table(CHATS_TABLE)
+            .update({"last_active": _now_iso()})
+            .eq("session", session)
+            .execute()
+        )
+        if not resp.data:
+            self._client.table(CHATS_TABLE).insert({
+                "session": session,
+                "title": title or "New chat",
+            }).execute()
+
+    def list_chats(self) -> list[ChatInfo]:
+        resp = (
+            self._client.table(CHATS_TABLE)
+            .select("session, title, created_at, last_active")
+            .order("last_active", desc=True)
+            .execute()
+        )
+        return resp.data or []
+
+    def delete_chat(self, session: str) -> None:
+        self._client.table(CONV_TABLE).delete().eq("session", session).execute()
+        self._client.table(CHATS_TABLE).delete().eq("session", session).execute()
+
+    def cleanup_expired_chats(self, days: int = 20) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        resp = (
+            self._client.table(CHATS_TABLE)
+            .select("session")
+            .lt("last_active", cutoff)
+            .execute()
+        )
+        expired = [row["session"] for row in (resp.data or [])]
+        for session in expired:
+            self.delete_chat(session)
+        return len(expired)

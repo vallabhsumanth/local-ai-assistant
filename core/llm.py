@@ -63,6 +63,9 @@ class EchoProvider(LLMProvider):
 
     name = "echo"
 
+    def __init__(self, model: str | None = None) -> None:
+        pass  # accepts `model` for a uniform constructor signature; unused
+
     def chat(self, messages: list[Message]) -> str:
         last_user = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"),
@@ -77,15 +80,16 @@ class EchoProvider(LLMProvider):
 
 class AnthropicProvider(LLMProvider):
     name = "anthropic"
+    supports_tools = True
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         anthropic = ensure_package("anthropic")
         if anthropic is None:
             raise RuntimeError("anthropic SDK unavailable")
         if not settings.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        self._model = settings.llm_model or "claude-sonnet-5"
+        self._model = model or settings.llm_model or "claude-sonnet-5"
 
     def chat(self, messages: list[Message]) -> str:
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
@@ -100,18 +104,83 @@ class AnthropicProvider(LLMProvider):
             block.text for block in resp.content if getattr(block, "type", "") == "text"
         )
 
+    @staticmethod
+    def to_anthropic_tools(tools: list[dict]) -> list[dict]:
+        """Our Tool.spec() is OpenAI-shaped: {"type":"function","function":
+        {name, description, parameters}}. Anthropic wants the inner dict
+        directly, with "parameters" renamed to "input_schema"."""
+        out = []
+        for t in tools:
+            fn = t.get("function", t)
+            out.append({
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+            })
+        return out
+
+    @staticmethod
+    def to_anthropic_messages(messages: list[Message]) -> tuple[str, list[dict]]:
+        """Converts our generic message list (incl. {"role":"tool",...}
+        entries) into Anthropic's system-string + content-block convention.
+        Anthropic has no "tool" role — a tool result is a "user" message
+        containing a tool_result block referencing the original tool_use id.
+        """
+        system_parts: list[str] = []
+        out: list[dict] = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                system_parts.append(m.get("content", ""))
+            elif role == "tool":
+                out.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": m.get("tool_call_id"),
+                        "content": m.get("content", ""),
+                    }],
+                })
+            elif role == "assistant" and isinstance(m.get("content"), list):
+                out.append(m)  # already Anthropic-native, from a prior turn this call
+            else:
+                out.append({"role": role, "content": m.get("content", "")})
+        return "\n".join(p for p in system_parts if p), out
+
+    def chat_with_tools(self, messages: list[Message], tools: list[dict]) -> dict:
+        system, convo = self.to_anthropic_messages(messages)
+        kwargs: dict = {"model": self._model, "max_tokens": 4096, "messages": convo}
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = self.to_anthropic_tools(tools)
+        resp = self._client.messages.create(**kwargs)
+
+        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        calls, raw_content = [], []
+        for b in resp.content:
+            btype = getattr(b, "type", "")
+            if btype == "text":
+                raw_content.append({"type": "text", "text": b.text})
+            elif btype == "tool_use":
+                raw_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                calls.append({"name": b.name, "args": b.input or {}, "id": b.id})
+        return {"content": text, "tool_calls": calls,
+                "raw": {"role": "assistant", "content": raw_content}}
+
 
 class OpenAIProvider(LLMProvider):
     name = "openai"
+    supports_tools = True
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         openai = ensure_package("openai")
         if openai is None:
             raise RuntimeError("openai SDK unavailable")
         if not settings.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
         self._client = openai.OpenAI(api_key=settings.openai_api_key)
-        self._model = settings.llm_model or "gpt-4o"
+        self._model = model or settings.llm_model or "gpt-4o"
 
     def chat(self, messages: list[Message]) -> str:
         resp = self._client.chat.completions.create(
@@ -120,17 +189,58 @@ class OpenAIProvider(LLMProvider):
         )
         return resp.choices[0].message.content or ""
 
+    @staticmethod
+    def to_openai_messages(messages: list[Message]) -> list[dict]:
+        """Our Tool.spec()/tool-role convention already matches OpenAI's own
+        closely — this just strips our internal-only 'tool_name' key and
+        passes native OpenAI assistant tool_calls messages through as-is."""
+        out = []
+        for m in messages:
+            role = m.get("role")
+            if role == "tool":
+                out.append({"role": "tool", "tool_call_id": m.get("tool_call_id"),
+                            "content": m.get("content", "")})
+            elif role == "assistant" and "tool_calls" in m:
+                out.append(m)  # already OpenAI-native, from a prior turn this call
+            else:
+                out.append({"role": role, "content": m.get("content", "")})
+        return out
+
+    def chat_with_tools(self, messages: list[Message], tools: list[dict]) -> dict:
+        kwargs: dict = {"model": self._model, "messages": self.to_openai_messages(messages)}
+        if tools:
+            kwargs["tools"] = tools  # Tool.spec() is already OpenAI's exact shape
+        resp = self._client.chat.completions.create(**kwargs)
+        msg = resp.choices[0].message
+
+        calls: list[dict] = []
+        raw_tool_calls = None
+        if msg.tool_calls:
+            raw_tool_calls = []
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                calls.append({"name": tc.function.name, "args": args, "id": tc.id})
+                raw_tool_calls.append({"id": tc.id, "type": "function", "function":
+                                        {"name": tc.function.name, "arguments": tc.function.arguments}})
+        raw = {"role": "assistant", "content": msg.content}
+        if raw_tool_calls:
+            raw["tool_calls"] = raw_tool_calls
+        return {"content": msg.content or "", "tool_calls": calls, "raw": raw}
+
 
 class OllamaProvider(LLMProvider):
     name = "ollama"
     supports_tools = True
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         requests = ensure_package("requests")
         if requests is None:
             raise RuntimeError("requests unavailable")
         self._requests = requests
-        self._model = settings.llm_model or "llama3"
+        self._model = model or settings.llm_model or "llama3"
 
     def _post(self, payload: dict) -> dict:
         resp = self._requests.post(
@@ -215,3 +325,33 @@ def get_provider() -> LLMProvider:
     except Exception as exc:  # noqa: BLE001 - want to degrade gracefully
         log.warning("Provider %r failed to init (%s); using echo.", key, exc)
         return EchoProvider()
+
+
+def get_deep_provider() -> LLMProvider | None:
+    """Instantiate the optional stronger model used only for Deep Think.
+
+    Returns None if DEEP_LLM_PROVIDER isn't set, or if it fails to init —
+    the caller falls back to the everyday provider (still boosted with more
+    steps) rather than silently downgrading to echo, which would be a
+    confusing regression specifically for the "smarter analysis" mode.
+    """
+    if not settings.deep_think_configured:
+        return None
+    key = settings.deep_llm_provider.lower()
+    cls = _PROVIDERS.get(key)
+    if cls is None:
+        log.warning("Unknown DEEP_LLM_PROVIDER %r; Deep Think will use the "
+                     "everyday model instead.", key)
+        return None
+    try:
+        provider = cls(model=settings.deep_llm_model or None)
+        if not provider.supports_tools:
+            log.warning("Deep Think provider %r doesn't support tools; "
+                         "using the everyday model instead.", provider.name)
+            return None
+        log.info("Deep Think provider ready: %s", provider.name)
+        return provider
+    except Exception as exc:  # noqa: BLE001 - degrade, don't crash
+        log.warning("Deep Think provider %r failed to init (%s); using the "
+                     "everyday model instead.", key, exc)
+        return None

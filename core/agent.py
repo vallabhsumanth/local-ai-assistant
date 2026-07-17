@@ -53,6 +53,7 @@ class Agent:
                 messages.append({
                     "role": "tool",
                     "tool_name": name,
+                    "tool_call_id": call.get("id"),
                     "content": result[:MAX_TOOL_OUTPUT],
                 })
 
@@ -95,6 +96,7 @@ class Agent:
                 messages.append({
                     "role": "tool",
                     "tool_name": name,
+                    "tool_call_id": call.get("id"),
                     "content": result[:MAX_TOOL_OUTPUT],
                 })
 

@@ -26,6 +26,7 @@ log = get_logger(__name__)
 
 Turn = dict[str, str]
 ChatInfo = dict[str, str]  # {session, title, created_at, last_active}
+KnowledgeItem = dict[str, str]  # {topic, content, source, created_at}
 
 
 class MemoryBackend(ABC):
@@ -65,6 +66,16 @@ class MemoryBackend(ABC):
     def cleanup_expired_chats(self, days: int = 20) -> int:
         """Delete chats inactive for more than `days`. Returns how many."""
 
+    # --- persistent knowledge base (research that compounds over time) ---
+    @abstractmethod
+    def save_knowledge(self, topic: str, content: str, source: str | None = None) -> None:
+        """Persist a research finding so future conversations can build on it
+        instead of re-researching the same thing from scratch."""
+
+    @abstractmethod
+    def search_knowledge(self, query: str, limit: int = 5) -> list[KnowledgeItem]:
+        """Search previously saved knowledge. Most relevant first."""
+
 
 class InMemoryMemory(MemoryBackend):
     """Ephemeral, process-local store. Lost on exit. No disk writes."""
@@ -75,6 +86,7 @@ class InMemoryMemory(MemoryBackend):
         self._turns: list[tuple[str, str, str]] = []  # (session, role, content)
         self._facts: dict[str, str] = {}
         self._chats: dict[str, dict] = {}  # session -> {title, created_at, last_active}
+        self._knowledge: list[dict] = []  # [{topic, content, source, created_at}]
 
     def add_turn(self, session: str, role: str, content: str) -> None:
         self._turns.append((session, role, content))
@@ -123,6 +135,25 @@ class InMemoryMemory(MemoryBackend):
         for s in expired:
             self.delete_chat(s)
         return len(expired)
+
+    def save_knowledge(self, topic: str, content: str, source: str | None = None) -> None:
+        self._knowledge.append({
+            "topic": topic, "content": content, "source": source or "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def search_knowledge(self, query: str, limit: int = 5) -> list[KnowledgeItem]:
+        words = [w for w in query.lower().split() if w]
+        scored = []
+        for item in self._knowledge:
+            hay = (item["topic"] + " " + item["content"]).lower()
+            # Count occurrences, not just presence — a document mentioning a
+            # term repeatedly is a stronger match than one mentioning it once.
+            score = sum(hay.count(w) for w in words)
+            if score > 0:
+                scored.append((score, item))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in scored[:limit]]
 
 
 def get_memory() -> MemoryBackend:

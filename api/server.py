@@ -17,6 +17,10 @@ Endpoints:
                         working Stop button, via an aborted fetch)
                         body: {"message": str, "session": str,
                                "deep_think": bool = False}
+  POST /upload      -> the attach-file button. Accepts a .xlsx/.xls/.csv/.txt
+                        file (multipart/form-data), analyzes it, saves the
+                        analysis to the permanent knowledge base, and returns
+                        {"filename": str, "analysis": str}.
 
 On startup, any chat inactive for more than 20 days is deleted (registry
 entry + its messages) — see Assistant._touch_chat / memory cleanup_expired_chats.
@@ -33,11 +37,12 @@ where the user can confirm at the prompt.
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 from core.assistant import Assistant
 from core.deps import ensure_package
-from tools import files
+from tools import files, sheets
 from utils.logger import get_logger
 
 log = get_logger("jarvis.api")
@@ -45,12 +50,16 @@ log = get_logger("jarvis.api")
 fastapi = ensure_package("fastapi")
 if fastapi is None:  # pragma: no cover
     raise SystemExit("fastapi not installed. Run: pip install -r requirements.txt")
+ensure_package("multipart")  # python-multipart — needed for file uploads
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, File, Form, UploadFile  # noqa: E402
 from fastapi.responses import HTMLResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
+UPLOAD_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt"}
 
 # In cloud/web mode we cannot prompt interactively, so deny destructive actions.
 files.set_confirm_handler(lambda msg: (log.warning("Auto-denied (web): %s", msg), False)[1])
@@ -101,6 +110,45 @@ def chat_history(session: str) -> list[dict]:
 def remove_chat(session: str) -> dict:
     _assistant.memory.delete_chat(session)
     return {"deleted": session}
+
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), session: str = Form("web")) -> dict:
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in UPLOAD_EXTENSIONS:
+        return {"error": f"Unsupported file type {ext!r}. Supported: "
+                          f"{', '.join(sorted(UPLOAD_EXTENSIONS))}"}
+
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        return {"error": f"File too large ({len(contents) / 1e6:.1f}MB) — "
+                          f"max {MAX_UPLOAD_BYTES / 1e6:.0f}MB."}
+
+    # Strip any path components from the name (safety) and make it unique on
+    # disk so a same-named re-upload never silently overwrites an old one.
+    safe_name = Path(file.filename or "upload").name
+    stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = UPLOADS_DIR / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+    dest.write_bytes(contents)
+
+    if ext in (".xlsx", ".xls", ".csv"):
+        analysis = sheets.read_spreadsheet(str(dest))
+    else:  # .txt
+        analysis = contents.decode("utf-8", errors="replace")[:8000]
+
+    # Persisted in two places: the knowledge base (so it's searchable and
+    # informs later conversations, even new ones) AND this chat's own history
+    # (so reopening this specific chat still shows the upload + analysis).
+    _assistant.memory.save_knowledge(
+        topic=f"Uploaded file: {safe_name}", content=analysis, source=f"upload:{safe_name}",
+    )
+    note = f"[Uploaded file: {safe_name}]"
+    _assistant.memory.add_turn(session, "user", note)
+    _assistant.memory.add_turn(session, "assistant", analysis)
+    _assistant.memory.touch_chat(session, title=note)
+    log.info("Uploaded %s (%d bytes) -> saved to knowledge base + chat %s", safe_name, len(contents), session)
+    return {"filename": safe_name, "analysis": analysis}
 
 
 @app.post("/chat")

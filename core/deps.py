@@ -39,6 +39,9 @@ ALLOWED_PACKAGES: dict[str, str] = {
     "pydantic": "pydantic",
     "playwright": "playwright",
     "ddgs": "ddgs",
+    "pandas": "pandas",
+    "openpyxl": "openpyxl",
+    "multipart": "python-multipart",
 }
 
 REQUIREMENTS = settings.root / "requirements.txt"

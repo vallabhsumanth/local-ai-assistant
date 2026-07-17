@@ -8,6 +8,7 @@ Tables (see memory/schema.sql):
   - napbot_conversations (id, session, role, content, ts)
   - napbot_facts         (key, value, updated)
   - napbot_chats         (session, title, created_at, last_active)
+  - napbot_knowledge     (id, topic, content, source, created_at, search_vector)
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.deps import ensure_package
 from config.settings import settings
-from memory.store import ChatInfo, MemoryBackend, Turn
+from memory.store import ChatInfo, KnowledgeItem, MemoryBackend, Turn
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -24,6 +25,7 @@ log = get_logger(__name__)
 CONV_TABLE = "napbot_conversations"
 FACT_TABLE = "napbot_facts"
 CHATS_TABLE = "napbot_chats"
+KNOWLEDGE_TABLE = "napbot_knowledge"
 
 
 def _now_iso() -> str:
@@ -122,3 +124,30 @@ class SupabaseMemory(MemoryBackend):
         for session in expired:
             self.delete_chat(session)
         return len(expired)
+
+    def save_knowledge(self, topic: str, content: str, source: str | None = None) -> None:
+        self._client.table(KNOWLEDGE_TABLE).insert({
+            "topic": topic, "content": content, "source": source,
+        }).execute()
+
+    def search_knowledge(self, query: str, limit: int = 5) -> list[KnowledgeItem]:
+        cols = "topic, content, source, created_at"
+        try:
+            resp = (
+                self._client.table(KNOWLEDGE_TABLE)
+                .select(cols)
+                .text_search("search_vector", query, {"type": "web_search"})
+                .limit(limit)
+                .execute()
+            )
+            return resp.data or []
+        except Exception as exc:  # noqa: BLE001 - fall back to plain substring match
+            log.warning("Full-text search failed (%s); using substring fallback.", exc)
+            resp = (
+                self._client.table(KNOWLEDGE_TABLE)
+                .select(cols)
+                .ilike("content", f"%{query}%")
+                .limit(limit)
+                .execute()
+            )
+            return resp.data or []

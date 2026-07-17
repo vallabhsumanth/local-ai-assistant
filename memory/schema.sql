@@ -34,6 +34,25 @@ create table if not exists napbot_chats (
 create index if not exists idx_napbot_chats_last_active
     on napbot_chats (last_active desc);
 
+-- Persistent knowledge base — research findings (competitor info, market
+-- notes, whatever the model looks up) get saved here so future conversations
+-- build on what's already been learned instead of re-researching cold every
+-- time. search_vector is a generated, indexed column so full-text search
+-- stays fast even as this table grows large (no full-table scan per query).
+create table if not exists napbot_knowledge (
+    id            bigint generated always as identity primary key,
+    topic         text        not null,
+    content       text        not null,
+    source        text,
+    created_at    timestamptz not null default now(),
+    search_vector tsvector generated always as
+        (to_tsvector('english', topic || ' ' || content)) stored
+);
+create index if not exists idx_napbot_knowledge_search
+    on napbot_knowledge using gin (search_vector);
+create index if not exists idx_napbot_knowledge_topic
+    on napbot_knowledge (topic);
+
 -- NOTE on security:
 -- If you use the SERVICE ROLE key in .env (server-side, never shipped to a
 -- browser), Row Level Security is bypassed and the above is enough.
@@ -42,9 +61,11 @@ create index if not exists idx_napbot_chats_last_active
 --   alter table napbot_conversations enable row level security;
 --   alter table napbot_facts        enable row level security;
 --   alter table napbot_chats        enable row level security;
+--   alter table napbot_knowledge    enable row level security;
 --   create policy "allow all" on napbot_conversations for all using (true) with check (true);
 --   create policy "allow all" on napbot_facts        for all using (true) with check (true);
 --   create policy "allow all" on napbot_chats        for all using (true) with check (true);
+--   create policy "allow all" on napbot_knowledge    for all using (true) with check (true);
 --
 -- (Tighten "using (true)" to your auth model for a real multi-user setup.)
 

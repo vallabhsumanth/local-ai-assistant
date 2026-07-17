@@ -48,6 +48,12 @@ class Settings:
     openai_api_key: str = os.environ.get("OPENAI_API_KEY", "")
     ollama_host: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
+    # --- Deep Think: an optional stronger model used only when the Deep
+    # Research toggle is on. Falls back to the everyday provider above (still
+    # boosted with more steps + deeper instructions) if this isn't set. ---
+    deep_llm_provider: str = os.environ.get("DEEP_LLM_PROVIDER", "")
+    deep_llm_model: str = os.environ.get("DEEP_LLM_MODEL", "")
+
     # --- Cloud storage (Supabase) — all user data lives here, not on disk ---
     supabase_url: str = os.environ.get("SUPABASE_URL", "")
     supabase_key: str = os.environ.get("SUPABASE_KEY", "")
@@ -74,6 +80,10 @@ class Settings:
     @property
     def supabase_configured(self) -> bool:
         return bool(self.supabase_url and self.supabase_key)
+
+    @property
+    def deep_think_configured(self) -> bool:
+        return bool(self.deep_llm_provider)
 
     @property
     def spotify_configured(self) -> bool:

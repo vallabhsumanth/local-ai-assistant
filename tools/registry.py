@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from browser import web
 from desktop import apps
-from tools import files
+from tools import files, sheets
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -175,6 +175,45 @@ def build_registry(memory, mailer=None) -> list[Tool]:
             "artist, or album by name, e.g. 'play Blinding Lights'.",
             _obj({"query": {"type": "string", "description": "Song / artist to search for."}}, ["query"]),
             lambda query, app="Spotify": apps.play_song(query, app),
+        ),
+        Tool(
+            "read_spreadsheet",
+            "Read an Excel (.xlsx/.xls) or CSV file — orders, inventory, ad "
+            "performance exports, any tabular data. Returns column names, "
+            "full summary statistics computed over every row, and a sample "
+            "of the actual rows. Use whenever the user references a "
+            "spreadsheet file or asks you to analyze order/sales data.",
+            _obj({"path": {"type": "string", "description": "Path to the .xlsx/.csv file."}}, ["path"]),
+            lambda path: sheets.read_spreadsheet(path),
+        ),
+        Tool(
+            "save_knowledge",
+            "Save a research finding to the permanent knowledge base — a "
+            "summary of what you learned about a topic (a competitor, a "
+            "market trend, anything researched via web_search/fetch_page). "
+            "Call this after researching something non-trivial, so future "
+            "conversations can build on it instead of re-researching cold. "
+            "Don't save trivial or one-off facts — only real findings.",
+            _obj({
+                "topic": {"type": "string", "description": "Short topic label, e.g. 'Nauti Nati pricing'."},
+                "content": {"type": "string", "description": "What you found — a clear, factual summary."},
+                "source": {"type": "string", "description": "Optional: where this came from, e.g. a URL."},
+            }, ["topic", "content"]),
+            lambda topic, content, source=None: (
+                memory.save_knowledge(topic, content, source)
+                or f"Saved to knowledge base: {topic}"
+            ),
+        ),
+        Tool(
+            "search_knowledge",
+            "Search the permanent knowledge base for research saved in past "
+            "conversations. Call this BEFORE doing a fresh web search on a "
+            "topic you might already have researched — avoids redundant work "
+            "and lets you build on what's already known.",
+            _obj({"query": {"type": "string", "description": "What to search for."}}, ["query"]),
+            lambda query: "\n\n".join(
+                f"{k['topic']}: {k['content']}" for k in memory.search_knowledge(query)
+            ) or "(nothing saved on this yet)",
         ),
     ]
 

@@ -14,9 +14,10 @@ from __future__ import annotations
 import shlex
 from typing import Iterator
 
+from config.settings import settings
 from core.agent import Agent
 from core.cache import ResponseCache
-from core.llm import LLMProvider, get_provider
+from core.llm import LLMProvider, get_deep_provider, get_provider
 from memory.store import get_memory
 from tools import files
 from tools.mailer import Emailer
@@ -54,46 +55,22 @@ SYSTEM_PROMPT = (
     "anything irreversible, explain it and ask first."
 )
 
-BRAND_CONTEXT = (
-    "\n\nBRAND CONTEXT — Nap Chief:\n"
-    "The user's company is Nap Chief (napchief.com), a kidswear and kids' "
-    "sleepwear brand. It sells direct via Shopify and through marketplaces "
-    "(Amazon, Flipkart, Myntra, Nykaa). Its ambition is to scale into a major "
-    "kidswear player — the kind of scale H&M Kids operates at — and it "
-    "directly competes with brands including Nauti Nati, Hopscotch, and "
-    "Klinkara.\n"
-    "\n"
-    "When asked about brand strategy, competitors, positioning, or how to "
-    "grow or beat competitors:\n"
-    "- You MUST call a tool (fetch_page or web_search) before making any "
-    "specific claim about a competitor. Never write 'based on my research' "
-    "or 'based on the fetched page' unless you actually called that tool "
-    "this turn.\n"
-    "- Only state what the tool result actually contains. A fetched "
-    "homepage's text is what it is — don't infer things not present in it "
-    "(e.g. don't claim to know their Instagram or photography style from a "
-    "homepage's product/price text alone). If the tool didn't return that "
-    "kind of information, say so plainly instead of guessing.\n"
-    "- web_search is weak for brand/company names and often returns "
-    "nothing. When it does, call fetch_page DIRECTLY on the competitor's "
-    "site instead: Nauti Nati -> nautinati.com, Hopscotch -> hopscotch.in. "
-    "If a site doesn't load or a domain is unconfirmed (e.g. Klinkara), say "
-    "so rather than inventing details.\n"
-    "- If you have not fetched any real data this turn, label your answer "
-    "clearly as a general hypothesis, not a finding, and offer to research "
-    "it properly.\n"
-    "- Give a genuinely fresh angle every time. Check the recent conversation "
-    "before answering — if you already gave a recommendation, don't repeat "
-    "it; switch lenses instead: pricing & value, product range & assortment, "
-    "marketing & social content, customer experience & reviews, "
-    "marketplace/distribution presence, or logistics/delivery & returns.\n"
-    "- Be honest about uncertainty. If you don't have real data (e.g. Nap "
-    "Chief's own sales figures), say so rather than inventing numbers.\n"
-    "- General questions unrelated to the brand are answered normally — this "
-    "context only applies when the user is asking about Nap Chief, its "
-    "market, or its competitors."
-)
+BRAND_CONTEXT_FILE = settings.root / "config" / "brand_context.txt"
 
+
+def _load_brand_context() -> str:
+    """Optional, editable company/brand context — kept OUT of source code so
+    Nap Bot stays portable: to hand this system to someone else, just edit or
+    empty this file (no code changes). Empty/missing file = no brand-specific
+    behavior at all, a fully generic assistant."""
+    if BRAND_CONTEXT_FILE.exists():
+        text = BRAND_CONTEXT_FILE.read_text(encoding="utf-8").strip()
+        if text:
+            return "\n\n" + text
+    return ""
+
+
+BRAND_CONTEXT = _load_brand_context()
 SYSTEM_PROMPT += BRAND_CONTEXT
 
 DEEP_THINK_INSTRUCTIONS = (
@@ -131,8 +108,24 @@ class Assistant:
             if self.provider.supports_tools
             else None
         )
+        # Optional stronger model used ONLY when Deep Think is on. None if not
+        # configured (DEEP_LLM_PROVIDER unset) — deep_think then falls back to
+        # the everyday agent, just with a bigger step budget, as before.
+        self.deep_provider: LLMProvider | None = get_deep_provider()
+        self.deep_agent = (
+            Agent(self.deep_provider, self.memory, build_registry(self.memory, self.mailer))
+            if self.deep_provider is not None
+            else None
+        )
         self.cache = ResponseCache()
         self.deep_think = False
+
+    def _active_agent(self) -> Agent | None:
+        """Which agent handles the current turn: the frontier Deep Think
+        agent if it's on and configured, otherwise the everyday one."""
+        if self.deep_think and self.deep_agent is not None:
+            return self.deep_agent
+        return self.agent
 
     _AFFIRM = {"confirm", "yes", "send", "send it", "yes send", "confirm send",
                "ok", "okay", "yep", "go ahead", "/confirm", "do it"}
@@ -182,9 +175,10 @@ class Assistant:
         system = SYSTEM_PROMPT + (DEEP_THINK_INSTRUCTIONS if self.deep_think else "")
         messages = [{"role": "system", "content": system}, *history]
         try:
-            if self.agent is not None:
+            active_agent = self._active_agent()
+            if active_agent is not None:
                 max_steps = DEEP_THINK_MAX_STEPS if self.deep_think else None
-                reply = self.agent.run(messages, max_steps=max_steps)
+                reply = active_agent.run(messages, max_steps=max_steps)
             else:
                 reply = self.provider.chat(messages)
         except Exception as exc:  # noqa: BLE001
@@ -246,9 +240,10 @@ class Assistant:
         messages = [{"role": "system", "content": system}, *history]
         full_text = ""
         try:
-            if self.agent is not None:
+            active_agent = self._active_agent()
+            if active_agent is not None:
                 max_steps = DEEP_THINK_MAX_STEPS if self.deep_think else None
-                for chunk in self.agent.run_stream(messages, max_steps=max_steps):
+                for chunk in active_agent.run_stream(messages, max_steps=max_steps):
                     if chunk["type"] == "delta":
                         full_text += chunk["text"]
                         yield chunk["text"]

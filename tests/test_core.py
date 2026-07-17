@@ -70,6 +70,26 @@ class TestMemory(unittest.TestCase):
         self.assertNotIn("old", sessions)
         self.assertIn("recent", sessions)
 
+    def test_save_and_search_knowledge(self):
+        mem = InMemoryMemory()
+        mem.save_knowledge("Nauti Nati pricing", "Uses discount-heavy pricing, avg ₹600.", "nautinati.com")
+        mem.save_knowledge("Hopscotch marketing", "Focuses on influencer partnerships.", "hopscotch.in")
+        results = mem.search_knowledge("pricing")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["topic"], "Nauti Nati pricing")
+
+    def test_search_knowledge_ranks_by_relevance(self):
+        mem = InMemoryMemory()
+        mem.save_knowledge("A", "mentions kidswear once")
+        mem.save_knowledge("B", "kidswear kidswear kidswear market trends")
+        results = mem.search_knowledge("kidswear")
+        self.assertEqual(results[0]["topic"], "B")  # more matching words -> ranked first
+
+    def test_search_knowledge_no_match(self):
+        mem = InMemoryMemory()
+        mem.save_knowledge("A", "something unrelated")
+        self.assertEqual(mem.search_knowledge("zzz_nomatch"), [])
+
 
 class TestLLM(unittest.TestCase):
     def test_get_provider_returns_provider(self):
@@ -80,6 +100,58 @@ class TestLLM(unittest.TestCase):
     def test_echo_reply(self):
         reply = EchoProvider().chat([{"role": "user", "content": "ping"}])
         self.assertIn("ping", reply)
+
+    # --- message/tool-spec conversion logic for Anthropic/OpenAI tool-calling ---
+    # These are pure data transforms (static methods, no API key/network needed)
+    # so they're fully verifiable without a live Anthropic/OpenAI key.
+
+    def test_anthropic_tool_spec_conversion(self):
+        from core.llm import AnthropicProvider
+        openai_shaped = [{"type": "function", "function": {
+            "name": "get_weather", "description": "d",
+            "parameters": {"type": "object", "properties": {"location": {"type": "string"}}},
+        }}]
+        out = AnthropicProvider.to_anthropic_tools(openai_shaped)
+        self.assertEqual(out, [{
+            "name": "get_weather", "description": "d",
+            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}},
+        }])
+
+    def test_anthropic_message_conversion_system_and_tool_result(self):
+        from core.llm import AnthropicProvider
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_name": "get_weather", "tool_call_id": "abc123", "content": "sunny"},
+        ]
+        system, convo = AnthropicProvider.to_anthropic_messages(messages)
+        self.assertEqual(system, "You are helpful.")
+        self.assertEqual(convo[0], {"role": "user", "content": "hi"})
+        self.assertEqual(convo[1]["role"], "user")  # tool results ride on a user message
+        block = convo[1]["content"][0]
+        self.assertEqual(block["type"], "tool_result")
+        self.assertEqual(block["tool_use_id"], "abc123")
+        self.assertEqual(block["content"], "sunny")
+
+    def test_anthropic_message_conversion_passes_through_native_assistant(self):
+        from core.llm import AnthropicProvider
+        native = {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "f", "input": {}}]}
+        _, convo = AnthropicProvider.to_anthropic_messages([native])
+        self.assertEqual(convo, [native])
+
+    def test_openai_message_conversion_tool_result(self):
+        from core.llm import OpenAIProvider
+        messages = [{"role": "tool", "tool_name": "get_weather", "tool_call_id": "call_1", "content": "sunny"}]
+        out = OpenAIProvider.to_openai_messages(messages)
+        self.assertEqual(out, [{"role": "tool", "tool_call_id": "call_1", "content": "sunny"}])
+
+    def test_openai_message_conversion_passes_through_native_assistant(self):
+        from core.llm import OpenAIProvider
+        native = {"role": "assistant", "content": None,
+                  "tool_calls": [{"id": "call_1", "type": "function",
+                                   "function": {"name": "f", "arguments": "{}"}}]}
+        out = OpenAIProvider.to_openai_messages([native])
+        self.assertEqual(out, [native])
 
     def test_echo_supports_tools_fallback(self):
         # A non-tool provider still answers via chat_with_tools (no tool_calls).
@@ -95,6 +167,35 @@ class TestFiles(unittest.TestCase):
             files.write_text(p, "hello world")
             self.assertEqual(files.read_text(p), "hello world")
             self.assertTrue(files.search(d, "*.txt"))
+
+
+class TestSheets(unittest.TestCase):
+    def test_read_csv_reports_shape_and_stats(self):
+        from tools import sheets
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "orders.csv"
+            p.write_text("sku,qty,price\nA,2,100\nB,1,50\nC,3,150\n")
+            out = sheets.read_spreadsheet(str(p))
+            self.assertIn("Rows: 3", out)
+            self.assertIn("Columns: 3", out)
+            self.assertIn("sku, qty, price", out)
+            self.assertIn("100", out)  # a real value made it into the sample rows
+
+    def test_read_missing_file(self):
+        from tools import sheets
+        out = sheets.read_spreadsheet("/no/such/file.xlsx")
+        self.assertIn("not found", out.lower())
+
+    def test_row_cap_keeps_full_stats(self):
+        from tools import sheets
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "big.csv"
+            lines = ["qty\n"] + [f"{i}\n" for i in range(1, 301)]  # 300 rows, 1..300
+            p.write_text("".join(lines))
+            out = sheets.read_spreadsheet(str(p))
+            self.assertIn("Rows: 300", out)
+            self.assertIn("more rows exist", out)
+            self.assertIn("300.00", out)  # max=300 present in the full-data summary stats
 
 
 class TestAssistant(unittest.TestCase):
@@ -262,6 +363,54 @@ class TestDesktop(unittest.TestCase):
             self.assertIn("opening spotify", apps.open_app("Spotify").lower())
         finally:
             apps.IS_MAC, apps._run = orig_mac, orig_run
+
+
+class TestUpload(unittest.TestCase):
+    """The /upload endpoint (attach-file button + drag-and-drop)."""
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        import api.server as srv
+        srv._assistant.memory = InMemoryMemory()  # isolate from real Supabase
+        return TestClient(srv.app), srv
+
+    def test_upload_csv_saves_to_knowledge_and_history(self):
+        client, srv = self._client()
+        csv_bytes = b"sku,qty,price\nDRESS,2,499\nSET,1,899\n"
+        resp = client.post(
+            "/upload",
+            files={"file": ("orders.csv", csv_bytes, "text/csv")},
+            data={"session": "up1"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["filename"], "orders.csv")
+        self.assertIn("Rows: 2", body["analysis"])
+
+        history = srv._assistant.memory.recent_turns("up1")
+        self.assertEqual(len(history), 2)
+        self.assertIn("Uploaded file", history[0]["content"])
+
+        found = srv._assistant.memory.search_knowledge("orders")
+        self.assertTrue(any("orders.csv" in k["topic"] for k in found))
+
+    def test_upload_rejects_unsupported_extension(self):
+        client, _ = self._client()
+        resp = client.post("/upload", files={"file": ("bad.exe", b"x", "application/octet-stream")})
+        self.assertIn("error", resp.json())
+        self.assertIn("Unsupported", resp.json()["error"])
+
+    def test_upload_rejects_oversized_file(self):
+        client, _ = self._client()
+        too_big = b"x" * (21 * 1024 * 1024)
+        resp = client.post("/upload", files={"file": ("big.txt", too_big, "text/plain")})
+        self.assertIn("error", resp.json())
+        self.assertIn("too large", resp.json()["error"].lower())
+
+    def test_upload_plain_text_file(self):
+        client, _ = self._client()
+        resp = client.post("/upload", files={"file": ("notes.txt", b"hello world", "text/plain")})
+        self.assertEqual(resp.json()["analysis"], "hello world")
 
 
 if __name__ == "__main__":

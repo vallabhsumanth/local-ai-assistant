@@ -2,6 +2,7 @@
 fastapi
 uvicorn[standard]
 pydantic
+python-multipart  # needed for FastAPI file uploads (the attach-file button)
 
 # Cloud storage backend (all user data lives in Supabase, not on disk).
 supabase
@@ -11,6 +12,10 @@ playwright
 
 # Free web search, no API key required.
 ddgs
+
+# Spreadsheet analysis (.xlsx/.csv) — openpyxl is pandas' engine for .xlsx.
+pandas
+openpyxl
 
 # Optional LLM providers — installed on demand by core/deps.py when selected:
 #   anthropic   # for JARVIS_LLM_PROVIDER=anthropic

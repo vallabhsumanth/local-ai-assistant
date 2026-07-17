@@ -78,9 +78,9 @@ which to call, JARVIS runs them, and answers from the results.
 
 Available tools: `list_directory`, `read_file`, `write_file`, `search_files`,
 `remember_fact`, `recall_fact`, `list_facts`, `web_search`, `fetch_page`,
-`get_weather`, `get_news`, `send_email`. Destructive ops (delete/move) are
-intentionally kept out of autonomous calling — use slash-commands with
-confirmation for those.
+`get_weather`, `get_news`, `send_email`, `read_spreadsheet`, `save_knowledge`,
+`search_knowledge`. Destructive ops (delete/move) are intentionally kept out
+of autonomous calling — use slash-commands with confirmation for those.
 
 **Email** (`send_email`, Gmail SMTP): drafts an email and **always waits for
 your confirmation** — it never auto-sends. JARVIS shows To/Subject/Body; reply
@@ -111,6 +111,47 @@ stores it in Supabase. Later, *"What company do I work at?"* → it recalls it.
 
 > Tool-calling quality scales with the model. `qwen2.5:1.5b` (local) works but
 > can embellish; a larger local model or a hosted API (on Railway) is crisper.
+
+## Deep Think's second brain, spreadsheets, and the knowledge base
+
+**Dual-provider Deep Think.** The sparkle toggle can now hand the whole
+question to a *separate, stronger model* instead of just giving the local
+model more steps. Set `DEEP_LLM_PROVIDER` (`anthropic` or `openai`) +
+`DEEP_LLM_MODEL` + the matching API key in `.env` — that model then drives its
+own research end-to-end (deciding what to search, reading results, deciding
+whether to dig further) using the same tools. Leave it unset and Deep Think
+falls back to today's behavior (local model, more steps) automatically — no
+breakage either way. See `core/llm.py`'s `get_deep_provider()`.
+
+**Spreadsheets** (`read_spreadsheet`): reads `.xlsx`/`.xls`/`.csv` files —
+orders, inventory, ad exports, anything tabular. Returns column names, full
+summary statistics computed over *every* row (not a sample), and a bounded
+sample of raw rows. A sheet with tens of thousands of rows can't all fit in an
+LLM's context window — no engineering trick changes that — so past a cap the
+stats still cover the whole file even though the raw-row sample is truncated.
+
+**Uploading a file** (the 📎 attach button, or drag-and-drop anywhere onto the
+chat): accepts `.xlsx`/`.xls`/`.csv`/`.txt` up to 20MB. It's analyzed
+immediately (same logic as `read_spreadsheet`), the analysis is shown as a
+reply, **saved to the permanent knowledge base**, and recorded in that chat's
+own history — so it's there if you switch away and back, and searchable from
+any future chat. On this Mac, "upload" is really just "hand Nap Bot a file
+directly" (see `POST /upload` in `api/server.py`) — the moment this runs on
+Railway, the same endpoint becomes a genuine network upload rather than a
+local convenience.
+
+**Persistent knowledge base** (`save_knowledge`, `search_knowledge`): research
+findings get saved to Supabase (`napbot_knowledge`, full-text indexed) so
+later conversations build on what's already been learned instead of
+re-researching cold every time. Separate from `remember_fact`, which is for
+facts *about you* — this is for facts about the world the model looked up.
+**Needs a new table** — run the `napbot_knowledge` block in
+[`memory/schema.sql`](memory/schema.sql) once in Supabase.
+
+**Portability.** All the Nap Chief-specific instructions live in one editable
+file, [`config/brand_context.txt`](config/brand_context.txt) — not in Python
+source. Handing this system to someone else? Just empty or rewrite that file;
+no code changes. Empty file = a fully generic assistant.
 
 ## Memory & cache
 

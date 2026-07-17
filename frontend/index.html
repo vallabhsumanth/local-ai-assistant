@@ -83,7 +83,11 @@
     aside .foot { margin-top: auto; font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
 
     /* ============ MAIN ============ */
-    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100vh; }
+    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100vh; position: relative; }
+    .drop-overlay { position: absolute; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center;
+      background: rgba(79,227,200,.08); border: 2px dashed var(--border-strong); border-radius: 10px; margin: 10px;
+      font-size: 15px; font-weight: 600; color: var(--accent); pointer-events: none; }
+    main.drag-active .drop-overlay { display: flex; }
     .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 28px; border-bottom: 1px solid var(--border); }
     .topbar h1 { font-size: 15px; font-weight: 600; }
     .topbar .status { margin-left: auto; font-size: 12px; color: var(--text-dim); font-family: var(--mono); display: flex; align-items: center; gap: 8px; }
@@ -192,7 +196,8 @@
     <div class="foot">v1.0 · Phase 1</div>
   </aside>
 
-  <main>
+  <main id="main">
+    <div class="drop-overlay" id="dropOverlay">Drop a spreadsheet or text file to analyze it</div>
     <div class="topbar">
       <h1>Assistant</h1>
       <div class="tools">
@@ -221,6 +226,10 @@
 
     <div class="composer">
       <div class="composer-inner">
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.txt" hidden />
+        <button class="iconbtn" id="attachBtn" title="Attach a spreadsheet or text file">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
         <input id="input" autocomplete="off" placeholder="Message Nap Bot…" autofocus />
         <button class="iconbtn mic" id="micBtn" title="Speak to Nap Bot">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
@@ -482,6 +491,66 @@
       loadChatList();
     }
     newChatBtn.addEventListener('click', startNewChat);
+
+    /* ---------------- file upload (attach button + drag & drop) ---------------- */
+    const fileInput = document.getElementById('fileInput');
+    const attachBtn = document.getElementById('attachBtn');
+    const mainEl = document.getElementById('main');
+
+    attachBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+      fileInput.value = ''; // allow re-selecting the same file later
+    });
+
+    let dragDepth = 0;
+    mainEl.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragDepth++;
+      mainEl.classList.add('drag-active');
+    });
+    mainEl.addEventListener('dragover', (e) => e.preventDefault());
+    mainEl.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) mainEl.classList.remove('drag-active');
+    });
+    mainEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      mainEl.classList.remove('drag-active');
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) uploadFile(file);
+    });
+
+    async function uploadFile(file) {
+      if (currentAbort) return; // don't upload mid-generation
+      const userNode = turn('user', session);
+      userNode.textContent = `[Uploading ${file.name}…]`;
+      const bodyNode = turn('jarvis', 'Nap Bot');
+      bodyNode.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+      setState('thinking');
+      try {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('session', session);
+        const res = await fetch('/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.error) {
+          userNode.textContent = `[Upload failed: ${file.name}]`;
+          bodyNode.innerHTML = renderMarkdown(data.error);
+        } else {
+          userNode.textContent = `[Uploaded file: ${data.filename}]`;
+          bodyNode.innerHTML = renderMarkdown(data.analysis);
+          speak(data.analysis);
+        }
+      } catch (err) {
+        userNode.textContent = `[Upload failed: ${file.name}]`;
+        bodyNode.innerHTML = renderMarkdown('Upload failed: ' + err);
+      } finally {
+        setState('idle');
+        loadChatList();
+      }
+    }
 
     /* ---------------- voice output (free, browser TTS) ---------------- */
     // Strip Markdown syntax before speaking — otherwise TTS reads the raw

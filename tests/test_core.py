@@ -394,6 +394,30 @@ class TestUpload(unittest.TestCase):
         found = srv._assistant.memory.search_knowledge("orders")
         self.assertTrue(any("orders.csv" in k["topic"] for k in found))
 
+    def test_upload_survives_knowledge_base_failure(self):
+        # Regression test: a broken/missing napbot_knowledge table (e.g. the
+        # user hasn't run that schema.sql block yet) must NOT crash the whole
+        # upload — the analysis is real and should still come back.
+        client, srv = self._client()
+
+        def _broken_save(topic, content, source=None):
+            raise Exception("Could not find the table 'public.napbot_knowledge'")
+        srv._assistant.memory.save_knowledge = _broken_save
+
+        csv_bytes = b"name,qty\nA,1\nB,2\n"
+        resp = client.post(
+            "/upload",
+            files={"file": ("orders.csv", csv_bytes, "text/csv")},
+            data={"session": "up2"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("Rows: 2", body["analysis"])
+        self.assertFalse(body["knowledge_saved"])
+        # Chat history must still be recorded despite the knowledge-base failure.
+        history = srv._assistant.memory.recent_turns("up2")
+        self.assertEqual(len(history), 2)
+
     def test_upload_rejects_unsupported_extension(self):
         client, _ = self._client()
         resp = client.post("/upload", files={"file": ("bad.exe", b"x", "application/octet-stream")})

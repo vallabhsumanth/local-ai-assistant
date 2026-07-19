@@ -140,15 +140,27 @@ async def upload_file(file: UploadFile = File(...), session: str = Form("web")) 
     # Persisted in two places: the knowledge base (so it's searchable and
     # informs later conversations, even new ones) AND this chat's own history
     # (so reopening this specific chat still shows the upload + analysis).
-    _assistant.memory.save_knowledge(
-        topic=f"Uploaded file: {safe_name}", content=analysis, source=f"upload:{safe_name}",
-    )
+    # The analysis itself already succeeded at this point — a knowledge-base
+    # hiccup (e.g. the napbot_knowledge table not created yet) shouldn't throw
+    # away a perfectly good result, so it's isolated in its own try/except.
+    knowledge_saved = True
+    try:
+        _assistant.memory.save_knowledge(
+            topic=f"Uploaded file: {safe_name}", content=analysis, source=f"upload:{safe_name}",
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade, don't fail the whole upload
+        knowledge_saved = False
+        log.warning("save_knowledge failed for %s (%s) — returning the analysis anyway. "
+                    "Have you run the napbot_knowledge SQL in memory/schema.sql yet?",
+                    safe_name, exc)
+
     note = f"[Uploaded file: {safe_name}]"
     _assistant.memory.add_turn(session, "user", note)
     _assistant.memory.add_turn(session, "assistant", analysis)
     _assistant.memory.touch_chat(session, title=note)
-    log.info("Uploaded %s (%d bytes) -> saved to knowledge base + chat %s", safe_name, len(contents), session)
-    return {"filename": safe_name, "analysis": analysis}
+    log.info("Uploaded %s (%d bytes) -> chat %s (knowledge base saved: %s)",
+             safe_name, len(contents), session, knowledge_saved)
+    return {"filename": safe_name, "analysis": analysis, "knowledge_saved": knowledge_saved}
 
 
 @app.post("/chat")

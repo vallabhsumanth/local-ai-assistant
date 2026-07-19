@@ -123,6 +123,10 @@
     .body ul, .body ol { margin: 4px 0 4px 22px; padding: 0; }
     .body li { margin: 3px 0; }
     .body .md-heading { font-weight: 700; margin: 2px 0; }
+    .body .md-table-wrap { overflow-x: auto; max-width: 100%; margin: 6px 0; }
+    .body table { border-collapse: collapse; font-size: 0.92em; white-space: normal; }
+    .body th, .body td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+    .body th { background: var(--surface-2); font-weight: 700; }
 
     .dots { display: inline-flex; gap: 5px; padding: 4px 0; }
     .dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); opacity: .4; animation: bounce 1.2s infinite; }
@@ -346,9 +350,26 @@
       s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
       return s;
     }
+    // Markdown pipe-tables (what tools/sheets.py emits for spreadsheet
+    // analysis) — a header row, a |---|---| separator, then body rows.
+    function isTableRow(line) {
+      return /^\s*\|.*\|\s*$/.test(line);
+    }
+    function splitTableRow(line) {
+      let s = line.trim();
+      if (s.startsWith('|')) s = s.slice(1);
+      if (s.endsWith('|')) s = s.slice(0, -1);
+      return s.split('|').map(c => c.trim());
+    }
+    function isTableSeparatorRow(line) {
+      if (!isTableRow(line)) return false;
+      const cells = splitTableRow(line);
+      return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
+    }
     function renderMarkdown(raw) {
       const lines = escapeHtml(raw).split('\n');
       const lineType = (line) => {
+        if (isTableRow(line)) return 'table';
         if (/^\s*[-*]\s+/.test(line)) return 'ul';
         if (/^\s*\d+[.)]\s+/.test(line)) return 'ol';
         if (/^\s*#{1,6}\s+/.test(line)) return 'heading';
@@ -371,6 +392,28 @@
           if (listType && nextType === listType) continue;
           closeList();
           html += '<br>';
+          continue;
+        }
+        if (type === 'table' && idx + 1 < lines.length && isTableSeparatorRow(lines[idx + 1])) {
+          // Header row + separator row confirmed a real table — consume every
+          // following table-row line as body, in one go, then resume the
+          // outer loop right after the last row.
+          closeList();
+          const headerCells = splitTableRow(line);
+          let bodyIdx = idx + 2;
+          const bodyRows = [];
+          while (bodyIdx < lines.length && lineType(lines[bodyIdx]) === 'table') {
+            bodyRows.push(splitTableRow(lines[bodyIdx]));
+            bodyIdx++;
+          }
+          html += '<div class="md-table-wrap"><table><thead><tr>';
+          headerCells.forEach(c => { html += `<th>${inlineMarkdown(c)}</th>`; });
+          html += '</tr></thead><tbody>';
+          bodyRows.forEach(cells => {
+            html += '<tr>' + cells.map(c => `<td>${inlineMarkdown(c)}</td>`).join('') + '</tr>';
+          });
+          html += '</tbody></table></div>';
+          idx = bodyIdx - 1;
           continue;
         }
         if (type === 'ul') {
@@ -540,7 +583,12 @@
           bodyNode.innerHTML = renderMarkdown(data.error);
         } else {
           userNode.textContent = `[Uploaded file: ${data.filename}]`;
-          bodyNode.innerHTML = renderMarkdown(data.analysis);
+          let text = data.analysis;
+          if (data.knowledge_saved === false) {
+            text += "\n\n*(Note: this wasn't saved to the permanent knowledge base — " +
+                    "the napbot_knowledge table may not be set up in Supabase yet.)*";
+          }
+          bodyNode.innerHTML = renderMarkdown(text);
           speak(data.analysis);
         }
       } catch (err) {
